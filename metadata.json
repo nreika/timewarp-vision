@@ -1,0 +1,7 @@
+{
+  "name": "Remix: TimeWarp Vision: 5m Future Predictor",
+  "description": "An AI-powered camera app that captures the present and uses Gemini to generate a realistic prediction of what happens 5 minutes into the future.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
