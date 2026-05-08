@@ -3,20 +3,93 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Download } from 'lucide-react';
 import CameraPreview from './components/CameraPreview';
-import { AppState, PredictionData, Target, PredictionItem } from './types';
+import { AppState, PredictionData, Target, PredictionItem, TouchDesignerBridgeStatus } from './types';
 import { predictFutureScenarios, generateFutureImage } from './services/geminiService';
+import { normalizeTouchDesignerSessionId, useTouchDesignerBridge } from './hooks/useTouchDesignerBridge';
 
 const getSceneKey = (index: number) => `scene${String.fromCharCode(65 + index)}`;
+const TOUCHDESIGNER_SESSION_STORAGE_KEY = 'timewarp.touchdesigner.sessionId';
+
+const getInitialTouchDesignerSessionId = () => {
+  if (typeof window === 'undefined') {
+    return 'timewarp-local';
+  }
+
+  return window.localStorage.getItem(TOUCHDESIGNER_SESSION_STORAGE_KEY) || 'timewarp-local';
+};
+
+const getBridgeStatusLabel = (status: TouchDesignerBridgeStatus) => {
+  switch (status) {
+    case 'idle':
+      return 'IDLE';
+    case 'starting':
+      return 'STARTING';
+    case 'waiting-answer':
+      return 'WAITING_FOR_TD';
+    case 'streaming':
+      return 'STREAMING';
+    case 'stopped':
+      return 'STOPPED';
+    case 'error':
+      return 'ERROR';
+    default:
+      return 'UNKNOWN';
+  }
+};
+
+const getBridgeStatusClassName = (status: TouchDesignerBridgeStatus) => {
+  switch (status) {
+    case 'streaming':
+      return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300';
+    case 'starting':
+    case 'waiting-answer':
+      return 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300';
+    case 'error':
+      return 'border-red-500/40 bg-red-500/10 text-red-300';
+    case 'stopped':
+      return 'border-amber-500/40 bg-amber-500/10 text-amber-300';
+    default:
+      return 'border-white/10 bg-white/5 text-slate-400';
+  }
+};
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
   const [lastPrediction, setLastPrediction] = useState<PredictionData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [target, setTarget] = useState<Target | null>(null);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [touchDesignerBridgeEnabled, setTouchDesignerBridgeEnabled] = useState(false);
+  const [touchDesignerSessionId, setTouchDesignerSessionId] = useState<string>(() => getInitialTouchDesignerSessionId());
   
   // Immersive states moved up to App to drive the separate Data Terminal
   const [showFuture, setShowFuture] = useState(false);
   const [selectedTimelineIndex, setSelectedTimelineIndex] = useState(0);
+
+  const normalizedTouchDesignerSessionId = normalizeTouchDesignerSessionId(touchDesignerSessionId);
+  const { bridgeState } = useTouchDesignerBridge(
+    cameraStream,
+    touchDesignerBridgeEnabled,
+    normalizedTouchDesignerSessionId
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(
+      TOUCHDESIGNER_SESSION_STORAGE_KEY,
+      normalizedTouchDesignerSessionId
+    );
+  }, [normalizedTouchDesignerSessionId]);
+
+  useEffect(() => {
+    if (!cameraStream && touchDesignerBridgeEnabled) {
+      setTouchDesignerBridgeEnabled(false);
+    }
+  }, [cameraStream, touchDesignerBridgeEnabled]);
 
   const handleCapture = useCallback(async (base64: string) => {
     setAppState(AppState.ANALYZING);
@@ -35,10 +108,11 @@ const App: React.FC = () => {
         }))
       );
 
+      const captureTimestamp = Date.now();
       const prediction: PredictionData = {
         originalImage: base64,
         items,
-        timestamp: Date.now()
+        timestamp: captureTimestamp
       };
 
       setLastPrediction(prediction);
@@ -51,6 +125,8 @@ const App: React.FC = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               image: item.predictedImage,
+              originalImage: prediction.originalImage,
+              captureId: String(prediction.timestamp),
               label: item.label,
               sceneKey: getSceneKey(index),
               sceneIndex: index
@@ -84,6 +160,15 @@ const App: React.FC = () => {
     link.click();
     document.body.removeChild(link);
   }, [currentTimeline]);
+
+  const handleTouchDesignerBridgeToggle = useCallback(() => {
+    if (!cameraStream) {
+      setError('ブラウザカメラの準備が完了してから TouchDesigner ストリームを開始してください。');
+      return;
+    }
+
+    setTouchDesignerBridgeEnabled((current) => !current);
+  }, [cameraStream]);
 
   return (
     <div className="min-h-screen bg-[#020202] text-slate-100 flex flex-col font-inter">
@@ -126,6 +211,8 @@ const App: React.FC = () => {
             isProcessing={appState === AppState.ANALYZING || appState === AppState.GENERATING} 
             target={target}
             onSetTarget={setTarget}
+            onStreamReady={setCameraStream}
+            onCameraError={setCameraError}
             prediction={lastPrediction}
             selectedTimelineIndex={selectedTimelineIndex}
             showFuture={showFuture}
@@ -206,6 +293,67 @@ const App: React.FC = () => {
                 </div>
               </div>
             )}
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                <h2 className="text-[11px] font-orbitron text-cyan-400 tracking-widest uppercase">TouchDesigner_Bridge</h2>
+                <span className={`rounded-full border px-2 py-1 text-[9px] font-orbitron tracking-[0.15em] ${getBridgeStatusClassName(bridgeState.status)}`}>
+                  {getBridgeStatusLabel(bridgeState.status)}
+                </span>
+              </div>
+
+              <div className="space-y-4 rounded-lg border border-white/10 bg-white/5 p-4 transition-all duration-300 hover:bg-white/[0.07]">
+                <div className="space-y-2">
+                  <label htmlFor="touchdesigner-session-id" className="block text-[9px] font-orbitron uppercase tracking-[0.25em] text-slate-500">
+                    Session_ID
+                  </label>
+                  <input
+                    id="touchdesigner-session-id"
+                    value={touchDesignerSessionId}
+                    onChange={(event) => setTouchDesignerSessionId(event.target.value)}
+                    disabled={touchDesignerBridgeEnabled}
+                    className="w-full rounded border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition-colors focus:border-cyan-500"
+                    placeholder="timewarp-local"
+                  />
+                  <p className="text-[10px] leading-relaxed text-slate-400">
+                    TouchDesigner 側の受信設定でもこの Session ID を使います。
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-[10px] font-orbitron tracking-[0.15em] text-slate-500">
+                  <div className="rounded border border-white/10 bg-black/20 px-3 py-2">
+                    INPUT: {cameraStream ? 'BROWSER_CAM' : 'WAITING'}
+                  </div>
+                  <div className="rounded border border-white/10 bg-black/20 px-3 py-2">
+                    OUTPUT: WEBRTC
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleTouchDesignerBridgeToggle}
+                  disabled={!cameraStream}
+                  className={`w-full rounded-xl border-2 px-4 py-3 font-orbitron text-[11px] tracking-[0.2em] transition-all duration-300 ${
+                    touchDesignerBridgeEnabled
+                      ? 'border-red-500/60 bg-red-500/10 text-red-200 hover:bg-red-500/20'
+                      : 'border-cyan-500/60 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20 disabled:border-slate-800 disabled:bg-slate-900 disabled:text-slate-600'
+                  }`}
+                >
+                  {touchDesignerBridgeEnabled ? 'STOP_WEBRTC_STREAM' : 'START_WEBRTC_STREAM'}
+                </button>
+
+                <div className="rounded border border-white/10 bg-black/20 px-3 py-3 text-[10px] leading-relaxed text-slate-400">
+                  <p>1. ブラウザがカメラを保持したまま映像を送ります。</p>
+                  <p>2. TouchDesigner は `WebRTC DAT` で受信します。</p>
+                  <p>3. シグナリング API は `/api/touchdesigner-stream` です。</p>
+                </div>
+
+                {(cameraError || bridgeState.error) && (
+                  <div className="rounded border border-red-500/40 bg-red-950/30 px-3 py-3 text-[10px] leading-relaxed text-red-300">
+                    {cameraError || bridgeState.error}
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* System Status / Error */}
             {error && (

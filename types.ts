@@ -16,6 +16,21 @@ export interface PredictionData {
   timestamp: number;
 }
 
+export type TouchDesignerBridgeStatus =
+  | 'idle'
+  | 'starting'
+  | 'waiting-answer'
+  | 'streaming'
+  | 'stopped'
+  | 'error';
+
+export interface TouchDesignerBridgeState {
+  status: TouchDesignerBridgeStatus;
+  sessionId: string;
+  error: string | null;
+  isConnected: boolean;
+}
+
 export enum AppState {
   IDLE = 'IDLE',
   CAPTURING = 'CAPTURING',

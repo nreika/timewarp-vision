@@ -8,6 +8,7 @@ import dgram from 'dgram';
 
 interface CaptureEvent {
   type: 'capture.saved';
+  captureId: string;
   sceneKey: string;
   sceneIndex: number | null;
   label: string;
@@ -19,13 +20,57 @@ interface CaptureEvent {
   latestImagePath: string;
   latestImageNormalizedPath: string;
   latestImageUrl: string;
+  sourceImageFilename: string | null;
+  sourceImageAbsolutePath: string | null;
+  sourceImageNormalizedPath: string | null;
+  sourceImageRelativePath: string | null;
+  sourceImageUrl: string | null;
   savedAt: string;
+  size: number;
+}
+
+interface SavedImageAsset {
+  filename: string;
+  absolutePath: string;
+  normalizedPath: string;
+  relativePath: string;
+  url: string;
   size: number;
 }
 
 interface LatestScenesManifest {
   updatedAt: string;
   scenes: Record<string, CaptureEvent>;
+}
+
+interface SessionDescriptionPayload {
+  type: 'offer' | 'answer';
+  sdp: string;
+  updatedAt: string;
+}
+
+interface IceCandidatePayload {
+  candidate: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
+}
+
+interface TouchDesignerIceCandidateMessage {
+  id: number;
+  from: 'browser' | 'touchdesigner';
+  candidate: IceCandidatePayload;
+  createdAt: string;
+}
+
+interface TouchDesignerStreamSession {
+  sessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  offer: SessionDescriptionPayload | null;
+  answer: SessionDescriptionPayload | null;
+  candidates: TouchDesignerIceCandidateMessage[];
+  nextCandidateId: number;
 }
 
 async function startServer() {
@@ -44,7 +89,10 @@ async function startServer() {
   const touchDesignerBridgeEnabled = (process.env.TOUCHDESIGNER_BRIDGE_ENABLED ?? 'true').toLowerCase() !== 'false';
   const touchDesignerHost = process.env.TOUCHDESIGNER_UDP_HOST || '127.0.0.1';
   const touchDesignerPort = Number(process.env.TOUCHDESIGNER_UDP_PORT || '9989');
+  const touchDesignerStreamSessionTtlMs = Number(process.env.TOUCHDESIGNER_STREAM_SESSION_TTL_MS || '1800000');
   const udpClient = dgram.createSocket('udp4');
+  const touchDesignerStreamSessions = new Map<string, TouchDesignerStreamSession>();
+  const imageDataUrlPattern = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/;
   const normalizePath = (filePath: string) => filePath.replace(/\\/g, '/');
   const normalizeSceneKey = (value: unknown, fallbackLabel: unknown) => {
     const rawValue = String(value || '').trim();
@@ -54,6 +102,76 @@ async function startServer() {
 
     const rawLabel = String(fallbackLabel || 'scene').replace(/\s+/g, '');
     return rawLabel.replace(/[^a-zA-Z0-9_-]/g, '') || 'scene';
+  };
+  const normalizeSessionId = (value: unknown) => {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) {
+      return 'timewarp-local';
+    }
+
+    return rawValue.replace(/[^a-zA-Z0-9_-]/g, '') || 'timewarp-local';
+  };
+  const normalizeCaptureId = (value: unknown) => {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) {
+      return String(Date.now());
+    }
+
+    return rawValue.replace(/[^a-zA-Z0-9_-]/g, '') || String(Date.now());
+  };
+  const getImageExtension = (mimeType: string) => {
+    switch (mimeType.toLowerCase()) {
+      case 'image/jpeg':
+        return 'jpg';
+      case 'image/png':
+        return 'png';
+      case 'image/webp':
+        return 'webp';
+      default:
+        return mimeType.split('/')[1]?.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'png';
+    }
+  };
+  const decodeImageDataUrl = (imageDataUrl: string) => {
+    const match = imageDataUrl.match(imageDataUrlPattern);
+    if (!match) {
+      throw new Error('Invalid image data URL');
+    }
+
+    return {
+      buffer: Buffer.from(match[2], 'base64'),
+      extension: getImageExtension(match[1])
+    };
+  };
+  const buildSavedImageAsset = (filename: string, buffer: Buffer): SavedImageAsset => {
+    const absolutePath = path.join(capturesDir, filename);
+    return {
+      filename,
+      absolutePath,
+      normalizedPath: normalizePath(absolutePath),
+      relativePath: normalizePath(path.relative(process.cwd(), absolutePath)),
+      url: `/captures/${filename}`,
+      size: buffer.length
+    };
+  };
+  const saveImageAsset = (filename: string, buffer: Buffer): SavedImageAsset => {
+    const asset = buildSavedImageAsset(filename, buffer);
+    fs.writeFileSync(asset.absolutePath, buffer);
+    return asset;
+  };
+  const ensureSourceImageSaved = (sourceImage: unknown, captureId: string): SavedImageAsset | null => {
+    if (typeof sourceImage !== 'string' || !sourceImage.trim()) {
+      return null;
+    }
+
+    const { buffer, extension } = decodeImageDataUrl(sourceImage);
+    const asset = buildSavedImageAsset(`timewarp_original_${captureId}.${extension}`, buffer);
+
+    if (!fs.existsSync(asset.absolutePath)) {
+      fs.writeFileSync(asset.absolutePath, buffer);
+      console.log(`Saved source image to: ${asset.absolutePath}`);
+    }
+
+    return asset;
   };
   const readLatestScenesManifest = (): LatestScenesManifest => {
     if (!fs.existsSync(latestScenesMetaPath)) {
@@ -65,6 +183,43 @@ async function startServer() {
     } catch (error) {
       console.error('Failed to parse latest scenes metadata:', error);
       return { updatedAt: '', scenes: {} };
+    }
+  };
+  const summarizeTouchDesignerStreamSession = (session: TouchDesignerStreamSession) => ({
+    sessionId: session.sessionId,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    hasOffer: Boolean(session.offer),
+    hasAnswer: Boolean(session.answer),
+    candidateCounts: {
+      browser: session.candidates.filter((item) => item.from === 'browser').length,
+      touchdesigner: session.candidates.filter((item) => item.from === 'touchdesigner').length
+    }
+  });
+  const createTouchDesignerStreamSession = (sessionId: string) => {
+    const now = new Date().toISOString();
+    const session: TouchDesignerStreamSession = {
+      sessionId,
+      createdAt: now,
+      updatedAt: now,
+      offer: null,
+      answer: null,
+      candidates: [],
+      nextCandidateId: 1
+    };
+
+    touchDesignerStreamSessions.set(sessionId, session);
+    return session;
+  };
+  const getTouchDesignerStreamSession = (sessionId: string) =>
+    touchDesignerStreamSessions.get(sessionId) || null;
+  const cleanupExpiredTouchDesignerStreamSessions = () => {
+    const expirationThreshold = Date.now() - touchDesignerStreamSessionTtlMs;
+
+    for (const [sessionId, session] of touchDesignerStreamSessions.entries()) {
+      if (new Date(session.updatedAt).getTime() < expirationThreshold) {
+        touchDesignerStreamSessions.delete(sessionId);
+      }
     }
   };
 
@@ -91,6 +246,147 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use('/captures', express.static(capturesDir));
 
+  app.post('/api/touchdesigner-stream/session', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.body?.sessionId);
+    const session = createTouchDesignerStreamSession(sessionId);
+    res.json(summarizeTouchDesignerStreamSession(session));
+  });
+
+  app.get('/api/touchdesigner-stream/session/:sessionId', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = getTouchDesignerStreamSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json(summarizeTouchDesignerStreamSession(session));
+  });
+
+  app.delete('/api/touchdesigner-stream/session/:sessionId', (req, res) => {
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    touchDesignerStreamSessions.delete(sessionId);
+    res.json({ success: true, sessionId });
+  });
+
+  app.post('/api/touchdesigner-stream/session/:sessionId/offer', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const { type, sdp } = req.body || {};
+    if (type !== 'offer' || typeof sdp !== 'string' || !sdp.trim()) {
+      return res.status(400).json({ error: 'A valid WebRTC offer is required' });
+    }
+
+    const session = getTouchDesignerStreamSession(sessionId) || createTouchDesignerStreamSession(sessionId);
+    session.offer = {
+      type,
+      sdp,
+      updatedAt: new Date().toISOString()
+    };
+    session.updatedAt = session.offer.updatedAt;
+    res.json({ success: true, session: summarizeTouchDesignerStreamSession(session) });
+  });
+
+  app.get('/api/touchdesigner-stream/session/:sessionId/offer', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = getTouchDesignerStreamSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json({ offer: session.offer });
+  });
+
+  app.post('/api/touchdesigner-stream/session/:sessionId/answer', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = getTouchDesignerStreamSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const { type, sdp } = req.body || {};
+    if (type !== 'answer' || typeof sdp !== 'string' || !sdp.trim()) {
+      return res.status(400).json({ error: 'A valid WebRTC answer is required' });
+    }
+
+    session.answer = {
+      type,
+      sdp,
+      updatedAt: new Date().toISOString()
+    };
+    session.updatedAt = session.answer.updatedAt;
+    res.json({ success: true, session: summarizeTouchDesignerStreamSession(session) });
+  });
+
+  app.get('/api/touchdesigner-stream/session/:sessionId/answer', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = getTouchDesignerStreamSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json({ answer: session.answer });
+  });
+
+  app.post('/api/touchdesigner-stream/session/:sessionId/candidates', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = getTouchDesignerStreamSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const { from, candidate } = req.body || {};
+    if ((from !== 'browser' && from !== 'touchdesigner') || !candidate || typeof candidate.candidate !== 'string') {
+      return res.status(400).json({ error: 'A valid ICE candidate is required' });
+    }
+
+    const message: TouchDesignerIceCandidateMessage = {
+      id: session.nextCandidateId++,
+      from,
+      candidate: {
+        candidate: candidate.candidate,
+        sdpMid: candidate.sdpMid ?? null,
+        sdpMLineIndex: typeof candidate.sdpMLineIndex === 'number' ? candidate.sdpMLineIndex : null,
+        usernameFragment: candidate.usernameFragment ?? null
+      },
+      createdAt: new Date().toISOString()
+    };
+
+    session.candidates.push(message);
+    session.updatedAt = message.createdAt;
+    res.json({ success: true, candidateId: message.id });
+  });
+
+  app.get('/api/touchdesigner-stream/session/:sessionId/candidates', (req, res) => {
+    cleanupExpiredTouchDesignerStreamSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = getTouchDesignerStreamSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const target = String(req.query.target || 'browser');
+    const after = Number(req.query.after || '0');
+    const expectedSender = target === 'touchdesigner' ? 'browser' : 'touchdesigner';
+    const items = session.candidates.filter((item) => item.from === expectedSender && item.id > after);
+    const lastId = items.length > 0 ? items[items.length - 1].id : after;
+
+    res.json({ items, lastId });
+  });
+
   app.get('/api/latest-capture', (_req, res) => {
     if (!fs.existsSync(latestMetaPath)) {
       return res.status(404).json({ error: 'No captures have been saved yet' });
@@ -116,40 +412,44 @@ async function startServer() {
 
   // API to save images
   app.post('/api/save-image', (req, res) => {
-    const { image, label, sceneKey, sceneIndex } = req.body;
-    if (!image) {
+    const { image, originalImage, captureId, label, sceneKey, sceneIndex } = req.body;
+    if (typeof image !== 'string' || !image.trim()) {
       return res.status(400).json({ error: 'No image data provided' });
     }
 
     try {
-      const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
-      const buffer = Buffer.from(base64Data, 'base64');
+      const normalizedCaptureId = normalizeCaptureId(captureId);
+      const sourceImageAsset = ensureSourceImageSaved(originalImage, normalizedCaptureId);
+      const { buffer, extension } = decodeImageDataUrl(image);
       const safeLabel = String(label || 'timeline').replace(/\s+/g, '_');
       const safeSceneKey = normalizeSceneKey(sceneKey, label);
-      const filename = `timewarp_${safeLabel}_${Date.now()}.png`;
-      const filePath = path.join(capturesDir, filename);
-      const publicUrl = `/captures/${filename}`;
+      const savedImageAsset = saveImageAsset(`timewarp_${safeLabel}_${Date.now()}.${extension}`, buffer);
       const payload: CaptureEvent = {
         type: 'capture.saved',
+        captureId: normalizedCaptureId,
         sceneKey: safeSceneKey,
         sceneIndex: Number.isInteger(sceneIndex) ? Number(sceneIndex) : null,
         label: safeLabel,
-        filename,
-        absolutePath: filePath,
-        normalizedPath: normalizePath(filePath),
-        relativePath: normalizePath(path.relative(process.cwd(), filePath)),
-        url: publicUrl,
-        latestImagePath: filePath,
-        latestImageNormalizedPath: normalizePath(filePath),
-        latestImageUrl: publicUrl,
+        filename: savedImageAsset.filename,
+        absolutePath: savedImageAsset.absolutePath,
+        normalizedPath: savedImageAsset.normalizedPath,
+        relativePath: savedImageAsset.relativePath,
+        url: savedImageAsset.url,
+        latestImagePath: savedImageAsset.absolutePath,
+        latestImageNormalizedPath: savedImageAsset.normalizedPath,
+        latestImageUrl: savedImageAsset.url,
+        sourceImageFilename: sourceImageAsset?.filename || null,
+        sourceImageAbsolutePath: sourceImageAsset?.absolutePath || null,
+        sourceImageNormalizedPath: sourceImageAsset?.normalizedPath || null,
+        sourceImageRelativePath: sourceImageAsset?.relativePath || null,
+        sourceImageUrl: sourceImageAsset?.url || null,
         savedAt: new Date().toISOString(),
-        size: buffer.length
+        size: savedImageAsset.size
       };
 
-      fs.writeFileSync(filePath, buffer);
       publishCapture(payload);
 
-      console.log(`Saved image to: ${filePath}`);
+      console.log(`Saved image to: ${savedImageAsset.absolutePath}`);
       res.json({ success: true, capture: payload });
     } catch (error) {
       console.error('Failed to save image:', error);

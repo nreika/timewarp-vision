@@ -7,6 +7,8 @@ interface CameraPreviewProps {
   isProcessing: boolean;
   target: Target | null;
   onSetTarget: (target: Target | null) => void;
+  onStreamReady?: (stream: MediaStream | null) => void;
+  onCameraError?: (message: string | null) => void;
   prediction: PredictionData | null;
   selectedTimelineIndex: number;
   showFuture: boolean;
@@ -18,6 +20,8 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
   isProcessing, 
   target, 
   onSetTarget, 
+  onStreamReady,
+  onCameraError,
   prediction,
   selectedTimelineIndex,
   showFuture,
@@ -28,26 +32,48 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let mounted = true;
+    let activeStream: MediaStream | null = null;
+
     const startCamera = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ 
           video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } } 
         });
+        if (!mounted) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        activeStream = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
+        onStreamReady?.(stream);
+        onCameraError?.(null);
       } catch (err) {
         console.error("Error accessing camera:", err);
+        onStreamReady?.(null);
+        onCameraError?.(err instanceof Error ? err.message : 'Unable to access the browser camera.');
       }
     };
+
     startCamera();
+
     return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
+      mounted = false;
+      onStreamReady?.(null);
+
+      const stream = activeStream || (videoRef.current?.srcObject as MediaStream | null);
+      if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
+
+      if (videoRef.current && videoRef.current.srcObject) {
+        videoRef.current.srcObject = null;
+      }
     };
-  }, []);
+  }, [onCameraError, onStreamReady]);
 
   const handleVideoClick = (e: React.MouseEvent | React.TouchEvent) => {
     if (isProcessing) return;
@@ -70,6 +96,10 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
   const captureFrame = useCallback(() => {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) {
+        return;
+      }
+
       const canvas = canvasRef.current;
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;

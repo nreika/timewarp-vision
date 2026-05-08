@@ -43,6 +43,37 @@ If you later add TouchDesigner project files such as `.toe` or `.tox`, keep them
 
 ## TouchDesigner Real-Time Bridge
 
+### Browser Camera to TouchDesigner (WebRTC)
+
+The browser can keep exclusive access to the camera and stream that live feed to TouchDesigner over WebRTC. This avoids the unstable "two apps try to open the same webcam" setup.
+
+What changed in the app:
+
+- The React app now exposes a `TouchDesigner_Bridge` panel
+- `START_WEBRTC_STREAM` creates a local signaling session at `/api/touchdesigner-stream`
+- The browser camera stream is published from the existing `getUserMedia()` feed, so prediction capture still works as before
+
+Default session ID:
+
+- `timewarp-local`
+
+Recommended flow:
+
+1. Start the app with `npm run dev`
+2. Allow camera access in the browser as usual
+3. In the sidebar, keep `Session_ID` as `timewarp-local` or set your own value
+4. Press `START_WEBRTC_STREAM`
+5. In TouchDesigner, use the sample receiver in [touchdesigner/td_webrtc_receiver.py](./touchdesigner/td_webrtc_receiver.py)
+6. Receive the remote video track through `WebRTC DAT` and `Video Stream In TOP`
+
+Notes:
+
+- This WebRTC bridge is designed for local machine / local network use first
+- If you move TouchDesigner onto another machine, you may need to add STUN/TURN settings on the TouchDesigner side
+- The signaling session is kept in memory and expires automatically
+- The existing UDP image-save bridge still works independently
+### Prediction Image Notifications (UDP)
+
 When a capture is saved, the local server now does three extra things:
 
 1. Saves each generated image with its own timestamped filename
@@ -62,6 +93,7 @@ The payload looks like this:
 ```json
 {
   "type": "capture.saved",
+  "captureId": "1776156364832",
   "sceneKey": "sceneA",
   "sceneIndex": 0,
   "label": "Timeline_A",
@@ -73,6 +105,11 @@ The payload looks like this:
   "latestImagePath": "C:/.../captures/timewarp_Timeline_A_1776156364832.png",
   "latestImageNormalizedPath": "C:/.../captures/timewarp_Timeline_A_1776156364832.png",
   "latestImageUrl": "/captures/timewarp_Timeline_A_1776156364832.png",
+  "sourceImageFilename": "timewarp_original_1776156364832.jpg",
+  "sourceImageAbsolutePath": "C:/.../captures/timewarp_original_1776156364832.jpg",
+  "sourceImageNormalizedPath": "C:/.../captures/timewarp_original_1776156364832.jpg",
+  "sourceImageRelativePath": "captures/timewarp_original_1776156364832.jpg",
+  "sourceImageUrl": "/captures/timewarp_original_1776156364832.jpg",
   "savedAt": "2026-04-14T08:42:31.000Z",
   "size": 123456
 }
