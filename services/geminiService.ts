@@ -1,8 +1,60 @@
-
-import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
+import promptConfig from "../gemini-prompts.json";
 import { Target } from "../types";
 
+interface GeminiPromptConfig {
+  scenarioPrediction: {
+    defaultTargetContextLines: string[];
+    targetedTargetContextLines: string[];
+    instructionLines: string[];
+  };
+  futureImageGeneration: {
+    instructionLines: string[];
+  };
+}
+
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+const prompts = promptConfig as GeminiPromptConfig;
+
+const joinLines = (lines: string[]): string => lines.join("\n").trim();
+
+const replacePlaceholders = (
+  template: string,
+  values: Record<string, string>
+): string =>
+  Object.entries(values).reduce(
+    (result, [key, value]) => result.replaceAll(`{{${key}}}`, value),
+    template
+  );
+
+const buildDefaultScenarioContext = (): string =>
+  joinLines(prompts.scenarioPrediction.defaultTargetContextLines);
+
+const buildTargetedScenarioContext = (target: Target): string =>
+  replacePlaceholders(
+    joinLines(prompts.scenarioPrediction.targetedTargetContextLines),
+    {
+      TARGET_X: target.x.toFixed(2),
+      TARGET_Y: target.y.toFixed(2),
+    }
+  );
+
+const buildScenarioPredictionPrompt = (target: Target | null): string => {
+  const targetContext = target
+    ? buildTargetedScenarioContext(target)
+    : buildDefaultScenarioContext();
+
+  return replacePlaceholders(
+    joinLines(prompts.scenarioPrediction.instructionLines),
+    { TARGET_CONTEXT: targetContext }
+  );
+};
+
+const buildFutureImagePrompt = (predictionPrompt: string): string =>
+  replacePlaceholders(
+    joinLines(prompts.futureImageGeneration.instructionLines),
+    { PREDICTION_PROMPT: predictionPrompt }
+  );
 
 export interface ScenarioResult {
   prediction_prompt: string;
@@ -15,27 +67,7 @@ export interface ScenarioResult {
  */
 export const predictFutureScenarios = async (base64Image: string, target: Target | null): Promise<ScenarioResult[]> => {
   const ai = getAI();
-  
-  const targetContext = target 
-    ? `The user has specifically targeted an object at (x: ${target.x.toFixed(2)}, y: ${target.y.toFixed(2)}). 
-       Focus on the movement, state change, or likely outcome for this specific object over the next 5 minutes.`
-    : "Predict realistic changes for the most prominent elements in the scene over the next 5 minutes.";
-
-  const prompt = `
-    Analyze this camera frame. 
-    ${targetContext}
-    
-    Predict 3 DISTINCT, realistic, and logically sound outcomes that could occur exactly 5 minutes from now.
-    Avoid surreal or impossible events. Please ensure that the camera angle of view is strictly fixed. Do not change one's outfits and belongings. 
-    
-    Each outcome should be different (e.g., Scenario 1: Progressing a task, Scenario 2: Leaving the scene, Scenario 3: A slight environmental change).
-    DO NOT change the perspective at all. Background should be identical.
-    Return a JSON object with a "scenarios" array containing 3 items.
-    Each item must have:
-    1. "prediction_prompt": Detailed visual prompt for image generation.
-    2. "scenario_description": Short Japanese text explaining the outcome.
-    3. "label": A short unique label like "Timeline A", "Timeline B", "Timeline C".
-  `;
+  const prompt = buildScenarioPredictionPrompt(target);
 
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
@@ -83,7 +115,7 @@ export const generateFutureImage = async (originalBase64: string, predictionProm
     contents: {
       parts: [
         { inlineData: { data: originalBase64.split(',')[1], mimeType: 'image/jpeg' } },
-        { text: `Modify this scene realistically for a 5-minute jump: ${predictionPrompt}. Keep composition consistent.` }
+        { text: buildFutureImagePrompt(predictionPrompt) }
       ]
     },
     config: {
