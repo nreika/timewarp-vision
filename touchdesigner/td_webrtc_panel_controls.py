@@ -32,6 +32,14 @@ def stop_stream():
     return _receiver_module().stop()
 
 
+def onReceive(dat, rowIndex, message, bytes, peer):
+    _debug(
+        'This DAT is a Panel Execute callback, not a UDP In callback. '
+        'Assign td_capture_listener.py to your UDP In DAT Callbacks DAT.'
+    )
+    return
+
+
 def onOffToOn(panelValue):
     owner_path = panelValue.owner.path
 

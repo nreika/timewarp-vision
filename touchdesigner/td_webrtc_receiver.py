@@ -2,6 +2,7 @@ import json
 import urllib.error
 import urllib.request
 
+
 SIGNAL_BASE_URL = 'http://127.0.0.1:3000/api/touchdesigner-stream'
 DEFAULT_SESSION_ID = 'timewarp-local'
 DEFAULT_WEBRTC_PATH = 'webrtc1'

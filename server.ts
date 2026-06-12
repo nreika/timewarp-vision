@@ -73,6 +73,27 @@ interface TouchDesignerStreamSession {
   nextCandidateId: number;
 }
 
+type TouchDesignerControlCommandType = 'capture';
+
+interface TouchDesignerControlCommand {
+  id: number;
+  type: TouchDesignerControlCommandType;
+  createdAt: string;
+}
+
+interface ParsedTouchDesignerControlMessage {
+  sessionId: string;
+  type: TouchDesignerControlCommandType;
+}
+
+interface TouchDesignerControlSession {
+  sessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  commands: TouchDesignerControlCommand[];
+  nextCommandId: number;
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || '3000');
@@ -89,9 +110,15 @@ async function startServer() {
   const touchDesignerBridgeEnabled = (process.env.TOUCHDESIGNER_BRIDGE_ENABLED ?? 'true').toLowerCase() !== 'false';
   const touchDesignerHost = process.env.TOUCHDESIGNER_UDP_HOST || '127.0.0.1';
   const touchDesignerPort = Number(process.env.TOUCHDESIGNER_UDP_PORT || '9989');
+  const touchDesignerControlUdpEnabled = (process.env.TOUCHDESIGNER_CONTROL_UDP_ENABLED ?? 'true').toLowerCase() !== 'false';
+  const touchDesignerControlUdpHost = process.env.TOUCHDESIGNER_CONTROL_UDP_HOST || '127.0.0.1';
+  const touchDesignerControlUdpPort = Number(process.env.TOUCHDESIGNER_CONTROL_UDP_PORT || '9990');
   const touchDesignerStreamSessionTtlMs = Number(process.env.TOUCHDESIGNER_STREAM_SESSION_TTL_MS || '1800000');
+  const touchDesignerControlSessionTtlMs = Number(process.env.TOUCHDESIGNER_CONTROL_SESSION_TTL_MS || '1800000');
   const udpClient = dgram.createSocket('udp4');
+  const touchDesignerControlUdpServer = dgram.createSocket('udp4');
   const touchDesignerStreamSessions = new Map<string, TouchDesignerStreamSession>();
+  const touchDesignerControlSessions = new Map<string, TouchDesignerControlSession>();
   const imageDataUrlPattern = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/;
   const normalizePath = (filePath: string) => filePath.replace(/\\/g, '/');
   const normalizeSceneKey = (value: unknown, fallbackLabel: unknown) => {
@@ -221,6 +248,93 @@ async function startServer() {
         touchDesignerStreamSessions.delete(sessionId);
       }
     }
+  };
+  const summarizeTouchDesignerControlSession = (session: TouchDesignerControlSession) => ({
+    sessionId: session.sessionId,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    commandCount: session.commands.length
+  });
+  const createTouchDesignerControlSession = (sessionId: string) => {
+    const now = new Date().toISOString();
+    const session: TouchDesignerControlSession = {
+      sessionId,
+      createdAt: now,
+      updatedAt: now,
+      commands: [],
+      nextCommandId: 1
+    };
+
+    touchDesignerControlSessions.set(sessionId, session);
+    return session;
+  };
+  const getTouchDesignerControlSession = (sessionId: string) =>
+    touchDesignerControlSessions.get(sessionId) || null;
+  const cleanupExpiredTouchDesignerControlSessions = () => {
+    const expirationThreshold = Date.now() - touchDesignerControlSessionTtlMs;
+
+    for (const [sessionId, session] of touchDesignerControlSessions.entries()) {
+      if (new Date(session.updatedAt).getTime() < expirationThreshold) {
+        touchDesignerControlSessions.delete(sessionId);
+      }
+    }
+  };
+  const enqueueTouchDesignerControlCommand = (
+    sessionId: string,
+    type: TouchDesignerControlCommandType
+  ) => {
+    const session = getTouchDesignerControlSession(sessionId) || createTouchDesignerControlSession(sessionId);
+    const command: TouchDesignerControlCommand = {
+      id: session.nextCommandId++,
+      type,
+      createdAt: new Date().toISOString()
+    };
+
+    session.commands.push(command);
+    if (session.commands.length > 100) {
+      session.commands = session.commands.slice(-100);
+    }
+    session.updatedAt = command.createdAt;
+    return { session, command };
+  };
+  const queueTouchDesignerCapture = (sessionId: string, source: string) => {
+    cleanupExpiredTouchDesignerControlSessions();
+
+    const normalizedSessionId = normalizeSessionId(sessionId);
+    const { session, command } = enqueueTouchDesignerControlCommand(normalizedSessionId, 'capture');
+    console.log(`TouchDesigner remote capture queued via ${source} for session "${normalizedSessionId}" (#${command.id}).`);
+    return { session, command };
+  };
+  const parseTouchDesignerControlMessage = (messageText: string): ParsedTouchDesignerControlMessage | null => {
+    const trimmed = messageText.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        const type = parsed.type ?? parsed.action;
+        if (type === 'capture') {
+          return {
+            type: 'capture',
+            sessionId: normalizeSessionId(parsed.sessionId)
+          };
+        }
+      }
+    } catch (_error) {
+      // Fallback to a compact plain-text protocol below.
+    }
+
+    const [rawType, rawSessionId] = trimmed.split(':', 2);
+    if (rawType === 'capture') {
+      return {
+        type: 'capture',
+        sessionId: normalizeSessionId(rawSessionId)
+      };
+    }
+
+    return null;
   };
 
   const publishCapture = (payload: CaptureEvent) => {
@@ -387,6 +501,32 @@ async function startServer() {
     res.json({ items, lastId });
   });
 
+  app.post('/api/touchdesigner-control/session/:sessionId/capture', (req, res) => {
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const { session, command } = queueTouchDesignerCapture(sessionId, 'http');
+    res.json({
+      success: true,
+      command,
+      session: summarizeTouchDesignerControlSession(session)
+    });
+  });
+
+  app.get('/api/touchdesigner-control/session/:sessionId/commands', (req, res) => {
+    cleanupExpiredTouchDesignerControlSessions();
+
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = getTouchDesignerControlSession(sessionId) || createTouchDesignerControlSession(sessionId);
+    const after = Number(req.query.after || '0');
+    const items = session.commands.filter((item) => item.id > after);
+    const lastId = items.length > 0 ? items[items.length - 1].id : after;
+
+    res.json({
+      items,
+      lastId,
+      session: summarizeTouchDesignerControlSession(session)
+    });
+  });
+
   app.get('/api/latest-capture', (_req, res) => {
     if (!fs.existsSync(latestMetaPath)) {
       return res.status(404).json({ error: 'No captures have been saved yet' });
@@ -477,6 +617,26 @@ async function startServer() {
     });
   }
 
+  touchDesignerControlUdpServer.on('message', (message, peer) => {
+    const parsed = parseTouchDesignerControlMessage(message.toString('utf8'));
+    if (!parsed) {
+      console.warn(`Ignoring unsupported TouchDesigner UDP control message from ${peer.address}:${peer.port}`);
+      return;
+    }
+
+    if (parsed.type === 'capture') {
+      queueTouchDesignerCapture(parsed.sessionId, `udp://${peer.address}:${peer.port}`);
+    }
+  });
+
+  touchDesignerControlUdpServer.on('error', (error) => {
+    console.error('TouchDesigner UDP control listener error:', error);
+  });
+
+  if (touchDesignerControlUdpEnabled) {
+    touchDesignerControlUdpServer.bind(touchDesignerControlUdpPort, touchDesignerControlUdpHost);
+  }
+
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Images will be saved to: ${capturesDir}`);
@@ -484,6 +644,9 @@ async function startServer() {
     console.log(`Vite HMR port: ${HMR_PORT}`);
     console.log(
       `TouchDesigner bridge: ${touchDesignerBridgeEnabled ? `udp://${touchDesignerHost}:${touchDesignerPort}` : 'disabled'}`
+    );
+    console.log(
+      `TouchDesigner control listener: ${touchDesignerControlUdpEnabled ? `udp://${touchDesignerControlUdpHost}:${touchDesignerControlUdpPort}` : 'disabled'}`
     );
   });
 }

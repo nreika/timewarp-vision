@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Download } from 'lucide-react';
 import CameraPreview from './components/CameraPreview';
@@ -62,6 +62,9 @@ const App: React.FC = () => {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [touchDesignerBridgeEnabled, setTouchDesignerBridgeEnabled] = useState(false);
   const [touchDesignerSessionId, setTouchDesignerSessionId] = useState<string>(() => getInitialTouchDesignerSessionId());
+  const [remoteCaptureQueue, setRemoteCaptureQueue] = useState<number[]>([]);
+  const [remoteControlError, setRemoteControlError] = useState<string | null>(null);
+  const remoteControlAfterRef = useRef(0);
   
   // Immersive states moved up to App to drive the separate Data Terminal
   const [showFuture, setShowFuture] = useState(false);
@@ -90,6 +93,78 @@ const App: React.FC = () => {
       setTouchDesignerBridgeEnabled(false);
     }
   }, [cameraStream, touchDesignerBridgeEnabled]);
+
+  useEffect(() => {
+    if (!cameraStream) {
+      remoteControlAfterRef.current = 0;
+      setRemoteCaptureQueue([]);
+      setRemoteControlError(null);
+      return;
+    }
+
+    remoteControlAfterRef.current = 0;
+    setRemoteCaptureQueue([]);
+    setRemoteControlError(null);
+
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    const pollRemoteCommands = async () => {
+      try {
+        const response = await fetch(
+          `/api/touchdesigner-control/session/${normalizedTouchDesignerSessionId}/commands?after=${remoteControlAfterRef.current}`
+        );
+        if (!response.ok) {
+          throw new Error(`Remote control polling failed (${response.status})`);
+        }
+
+        const data = await response.json();
+        if (cancelled) {
+          return;
+        }
+
+        const items = Array.isArray(data.items) ? data.items : [];
+        const captureCommandIds = items
+          .filter((item): item is { id: number; type: string } => typeof item?.id === 'number' && typeof item?.type === 'string')
+          .filter((item) => item.type === 'capture')
+          .map((item) => item.id);
+
+        if (captureCommandIds.length > 0) {
+          setRemoteCaptureQueue((current) => {
+            const next = [...current];
+            captureCommandIds.forEach((id) => {
+              if (!next.includes(id)) {
+                next.push(id);
+              }
+            });
+            return next;
+          });
+        }
+
+        if (typeof data.lastId === 'number') {
+          remoteControlAfterRef.current = Math.max(remoteControlAfterRef.current, data.lastId);
+        }
+        setRemoteControlError(null);
+      } catch (err: any) {
+        if (!cancelled) {
+          setRemoteControlError(err?.message || 'Failed to poll TouchDesigner remote controls.');
+        }
+      }
+
+      if (!cancelled) {
+        timeoutId = window.setTimeout(pollRemoteCommands, 1000);
+      }
+    };
+
+    pollRemoteCommands();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [cameraStream, normalizedTouchDesignerSessionId]);
 
   const handleCapture = useCallback(async (base64: string) => {
     setAppState(AppState.ANALYZING);
@@ -170,6 +245,10 @@ const App: React.FC = () => {
     setTouchDesignerBridgeEnabled((current) => !current);
   }, [cameraStream]);
 
+  const handleRemoteCaptureRequestHandled = useCallback((requestId: number) => {
+    setRemoteCaptureQueue((current) => current.filter((id) => id !== requestId));
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#020202] text-slate-100 flex flex-col font-inter">
       {/* 1. Immersive Header */}
@@ -217,6 +296,8 @@ const App: React.FC = () => {
             selectedTimelineIndex={selectedTimelineIndex}
             showFuture={showFuture}
             setShowFuture={setShowFuture}
+            captureRequestId={remoteCaptureQueue[0] || 0}
+            onCaptureRequestHandled={handleRemoteCaptureRequestHandled}
           />
         </section>
 
@@ -347,9 +428,9 @@ const App: React.FC = () => {
                   <p>3. シグナリング API は `/api/touchdesigner-stream` です。</p>
                 </div>
 
-                {(cameraError || bridgeState.error) && (
+                {(cameraError || bridgeState.error || remoteControlError) && (
                   <div className="rounded border border-red-500/40 bg-red-950/30 px-3 py-3 text-[10px] leading-relaxed text-red-300">
-                    {cameraError || bridgeState.error}
+                    {cameraError || bridgeState.error || remoteControlError}
                   </div>
                 )}
               </div>

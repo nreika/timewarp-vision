@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Target, PredictionData } from '../types';
 
 interface CameraPreviewProps {
@@ -13,6 +13,8 @@ interface CameraPreviewProps {
   selectedTimelineIndex: number;
   showFuture: boolean;
   setShowFuture: (show: boolean) => void;
+  captureRequestId?: number;
+  onCaptureRequestHandled?: (requestId: number) => void;
 }
 
 const CameraPreview: React.FC<CameraPreviewProps> = ({ 
@@ -25,15 +27,20 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
   prediction,
   selectedTimelineIndex,
   showFuture,
-  setShowFuture
+  setShowFuture,
+  captureRequestId = 0,
+  onCaptureRequestHandled
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastHandledCaptureRequestIdRef = useRef(0);
+  const [isVideoReady, setIsVideoReady] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     let activeStream: MediaStream | null = null;
+    setIsVideoReady(false);
 
     const startCamera = async () => {
       try {
@@ -62,6 +69,7 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
 
     return () => {
       mounted = false;
+      setIsVideoReady(false);
       onStreamReady?.(null);
 
       const stream = activeStream || (videoRef.current?.srcObject as MediaStream | null);
@@ -97,7 +105,7 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) {
-        return;
+        return false;
       }
 
       const canvas = canvasRef.current;
@@ -107,9 +115,26 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         onCapture(canvas.toDataURL('image/jpeg', 0.8));
+        return true;
       }
     }
+    return false;
   }, [onCapture]);
+
+  useEffect(() => {
+    if (!captureRequestId) {
+      return;
+    }
+
+    if (captureRequestId === lastHandledCaptureRequestIdRef.current || isProcessing || !isVideoReady) {
+      return;
+    }
+
+    if (captureFrame()) {
+      lastHandledCaptureRequestIdRef.current = captureRequestId;
+      onCaptureRequestHandled?.(captureRequestId);
+    }
+  }, [captureFrame, captureRequestId, isProcessing, isVideoReady, onCaptureRequestHandled]);
 
   const currentTimeline = prediction?.items[selectedTimelineIndex];
 
@@ -127,6 +152,8 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
         autoPlay 
         playsInline 
         muted 
+        onLoadedData={() => setIsVideoReady(true)}
+        onEmptied={() => setIsVideoReady(false)}
         className={`w-full h-full object-cover transition-all duration-1000 ease-in-out ${
           showFuture ? 'opacity-20 scale-105 blur-2xl grayscale brightness-150' : 'opacity-100 scale-100'
         }`}
