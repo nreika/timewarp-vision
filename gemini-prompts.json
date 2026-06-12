@@ -1,32 +1,52 @@
 {
-  "scenarioPrediction": {
-    "defaultTargetContextLines": [
-      "Predict realistic changes for the most prominent elements in the scene over the next 5 minutes."
+  "editingGuide": {
+    "editThisSection": "userEditable",
+    "doNotEditSection": "systemFixed",
+    "keepPlaceholders": [
+      "{{TARGET_X}}",
+      "{{TARGET_Y}}",
+      "{{PREDICTION_PROMPT}}"
     ],
-    "targetedTargetContextLines": [
-      "The user has specifically targeted an object at (x: {{TARGET_X}}, y: {{TARGET_Y}}).",
-      "Focus on the movement, state change, or likely outcome for this specific object over the next 5 minutes."
-    ],
-    "instructionLines": [
-      "Analyze this camera frame.",
-      "{{TARGET_CONTEXT}}",
-      "",
-      "Predict 3 DISTINCT, realistic, and logically sound outcomes that could occur exactly 5 minutes from now.",
-      "Avoid surreal or impossible events. Please ensure that the camera angle of view is strictly fixed. Do not change one's outfits and belongings.",
-      "",
-      "Each outcome should be different (e.g., Scenario 1: Progressing a task, Scenario 2: Leaving the scene, Scenario 3: A slight environmental change).",
-      "DO NOT change the perspective at all. Background should be identical.",
-      "Return a JSON object with a \"scenarios\" array containing 3 items.",
-      "Each item must have:",
-      "1. \"prediction_prompt\": Detailed visual prompt for image generation.",
-      "2. \"scenario_description\": Short Japanese text explaining the outcome.",
-      "3. \"label\": A short unique label like \"Timeline A\", \"Timeline B\", \"Timeline C\"."
+    "notes": [
+      "Edit only the strings inside userEditable.",
+      "Do not remove placeholders inside templates."
     ]
   },
-  "futureImageGeneration": {
-    "instructionLines": [
-      "Modify this scene realistically for a 5-minute jump: {{PREDICTION_PROMPT}}.",
-      "Keep composition consistent."
-    ]
+  "userEditable": {
+    "scenarioPrediction": {
+      "sceneAnalysisIntro": "Analyze this camera frame.",
+      "defaultTargetContext": "Predict realistic changes for the most prominent elements in the scene over the next 5 minutes.",
+      "targetedTargetContextTemplate": "The user has specifically targeted an object at (x: {{TARGET_X}}, y: {{TARGET_Y}}).",
+      "targetedTargetFocus": "Focus on the movement, state change, or likely outcome for this specific object over the next 5 minutes.",
+      "predictionRequest": "Predict 3 DISTINCT, realistic, and logically sound outcomes that could occur exactly 5 minutes from now.",
+      "variationGuidance": "Each outcome should be different",
+      "descriptionLanguageRule": "Write scenario_description in Japanese."
+    },
+    "futureImageGeneration": {
+      "editInstructionTemplate": "Modify this scene realistically for a 5-minute jump: {{PREDICTION_PROMPT}}."
+    }
+  },
+  "systemFixed": {
+    "scenarioPrediction": {
+      "hardRules": [
+        "Avoid surreal or impossible events.",
+        "Please ensure that the camera angle of view is strictly fixed.",
+        "Do not change one's outfits and belongings.",
+        "DO NOT change the perspective at all.",
+        "Background should be identical."
+      ],
+      "outputFormatRules": [
+        "Return a JSON object with a \"scenarios\" array containing 3 items.",
+        "Each item must have:",
+        "1. \"prediction_prompt\": Detailed visual prompt for image generation.",
+        "2. \"scenario_description\": Short text explaining the outcome.",
+        "3. \"label\": A short unique label like \"Timeline A\", \"Timeline B\", \"Timeline C\"."
+      ]
+    },
+    "futureImageGeneration": {
+      "hardRules": [
+        "Keep composition consistent."
+      ]
+    }
   }
 }

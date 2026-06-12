@@ -3,13 +3,34 @@ import promptConfig from "../gemini-prompts.json";
 import { Target } from "../types";
 
 interface GeminiPromptConfig {
-  scenarioPrediction: {
-    defaultTargetContextLines: string[];
-    targetedTargetContextLines: string[];
-    instructionLines: string[];
+  editingGuide?: {
+    editThisSection?: string;
+    doNotEditSection?: string;
+    keepPlaceholders?: string[];
+    notes?: string[];
   };
-  futureImageGeneration: {
-    instructionLines: string[];
+  userEditable: {
+    scenarioPrediction: {
+      sceneAnalysisIntro: string;
+      defaultTargetContext: string;
+      targetedTargetContextTemplate: string;
+      targetedTargetFocus: string;
+      predictionRequest: string;
+      variationGuidance: string;
+      descriptionLanguageRule: string;
+    };
+    futureImageGeneration: {
+      editInstructionTemplate: string;
+    };
+  };
+  systemFixed: {
+    scenarioPrediction: {
+      hardRules: string[];
+      outputFormatRules: string[];
+    };
+    futureImageGeneration: {
+      hardRules: string[];
+    };
   };
 }
 
@@ -17,6 +38,12 @@ const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 const prompts = promptConfig as GeminiPromptConfig;
 
 const joinLines = (lines: string[]): string => lines.join("\n").trim();
+const joinPromptSections = (...sections: Array<string | string[]>): string =>
+  sections
+    .map((section) => (Array.isArray(section) ? joinLines(section) : section.trim()))
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 
 const replacePlaceholders = (
   template: string,
@@ -28,15 +55,18 @@ const replacePlaceholders = (
   );
 
 const buildDefaultScenarioContext = (): string =>
-  joinLines(prompts.scenarioPrediction.defaultTargetContextLines);
+  prompts.userEditable.scenarioPrediction.defaultTargetContext.trim();
 
 const buildTargetedScenarioContext = (target: Target): string =>
-  replacePlaceholders(
-    joinLines(prompts.scenarioPrediction.targetedTargetContextLines),
-    {
-      TARGET_X: target.x.toFixed(2),
-      TARGET_Y: target.y.toFixed(2),
-    }
+  joinPromptSections(
+    replacePlaceholders(
+      prompts.userEditable.scenarioPrediction.targetedTargetContextTemplate,
+      {
+        TARGET_X: target.x.toFixed(2),
+        TARGET_Y: target.y.toFixed(2),
+      }
+    ),
+    prompts.userEditable.scenarioPrediction.targetedTargetFocus
   );
 
 const buildScenarioPredictionPrompt = (target: Target | null): string => {
@@ -44,16 +74,24 @@ const buildScenarioPredictionPrompt = (target: Target | null): string => {
     ? buildTargetedScenarioContext(target)
     : buildDefaultScenarioContext();
 
-  return replacePlaceholders(
-    joinLines(prompts.scenarioPrediction.instructionLines),
-    { TARGET_CONTEXT: targetContext }
+  return joinPromptSections(
+    prompts.userEditable.scenarioPrediction.sceneAnalysisIntro,
+    targetContext,
+    prompts.userEditable.scenarioPrediction.predictionRequest,
+    prompts.systemFixed.scenarioPrediction.hardRules,
+    prompts.userEditable.scenarioPrediction.variationGuidance,
+    prompts.userEditable.scenarioPrediction.descriptionLanguageRule,
+    prompts.systemFixed.scenarioPrediction.outputFormatRules
   );
 };
 
 const buildFutureImagePrompt = (predictionPrompt: string): string =>
-  replacePlaceholders(
-    joinLines(prompts.futureImageGeneration.instructionLines),
-    { PREDICTION_PROMPT: predictionPrompt }
+  joinPromptSections(
+    replacePlaceholders(
+      prompts.userEditable.futureImageGeneration.editInstructionTemplate,
+      { PREDICTION_PROMPT: predictionPrompt }
+    ),
+    prompts.systemFixed.futureImageGeneration.hardRules
   );
 
 export interface ScenarioResult {
