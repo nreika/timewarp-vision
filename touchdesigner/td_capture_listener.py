@@ -14,33 +14,13 @@ MOVIE_FILE_IN_OPS = {
 }
 ORIGINAL_MOVIE_FILE_IN_OP = 'moviefilein_original'
 INFO_TABLE_OP = 'capture_info'
-READY_STATUS_OP = 'ready_state_all'
-DISPLAY_TIMING_OP = 'display_timing'
-FADE_TRIGGER_OPS = {
-    'sceneA': 'fade_trigger_scene_a',
-    'sceneB': 'fade_trigger_scene_b',
-    'sceneC': 'fade_trigger_scene_c',
-}
-DISPLAY_SECONDS_CHANNEL = 'fade_seconds'
-HIDE_DELAY_SECONDS_CHANNEL = 'hide_delay_seconds'
-FADE_TRIGGER_VALUE_PARM = 'value0'
-FADE_TRIGGER_RESET_VALUE = 0
-FADE_TRIGGER_ACTIVE_VALUE = 1
-AUTO_DISPLAY_ON_BATCH_READY = True
-DEFAULT_HIDE_DELAY_SECONDS = 5.0
-DEFAULT_FADE_SECONDS = 2.0
 LATEST_CAPTURES_URL = 'http://127.0.0.1:3000/api/latest-captures'
 AUTO_RECOVER_FROM_MANIFEST = True
-ALLOW_REDISPLAY_LOADED_SCENE = False
 RELOAD_RETRY_FRAMES = (1, 6)
 
-DISPLAY_BUTTON_PATHS = {
-    '/project1/display_scene_a_btn': 'sceneA',
-    '/project1/display_scene_b_btn': 'sceneB',
-    '/project1/display_scene_c_btn': 'sceneC',
-}
-DISPLAY_LATEST_READY_BUTTON_PATH = '/project1/display_latest_ready_btn'
 START_GENERATION_BUTTON_PATH = '/project1/start_generation_btn'
+START_GENERATION_KEYBOARD_OP_PATHS = ('/project1/keyboardin1',)
+START_GENERATION_KEY_CHANNELS = ('1', 'k1', 'num1', 'numpad1')
 
 CONTROL_TRANSPORT = 'udp'
 CONTROL_UDP_HOST = '127.0.0.1'
@@ -53,6 +33,9 @@ WEBRTC_DAT_PATH = '/project1/webrtc1'
 SESSION_ID = 'timewarp-local'
 START_STREAM_BUTTON_PATH = '/project1/start_stream_btn'
 STOP_STREAM_BUTTON_PATH = '/project1/stop_stream_btn'
+STREAM_KEYBOARD_OP_PATHS = ('/project1/keyboardin1',)
+START_STREAM_KEY_CHANNELS = ('0', 'k0', 'num0', 'numpad0')
+STOP_STREAM_KEY_CHANNELS = ('9', 'k9', 'num9', 'numpad9')
 
 EXPECTED_SCENE_KEYS = tuple(sorted(MOVIE_FILE_IN_OPS))
 
@@ -72,7 +55,6 @@ def _new_scene_state(capture_id=''):
         'targetPath': '',
         'sourcePath': '',
         'savedAt': '',
-        'lastDisplayedAt': '',
         'payload': {},
     }
 
@@ -84,42 +66,14 @@ BATCH_STATE = {
     'isReady': False,
     'completedAt': '',
 }
-LAST_AUTO_DISPLAY_CAPTURE_ID = ''
+
+
 def _utc_timestamp():
     return '{}Z'.format(datetime.utcnow().isoformat())
 
 
-def _delay_frames(seconds):
-    return max(1, int(round((getattr(me.time, 'rate', 60) or 60) * max(0, seconds))))
-
-
 def _td_op(name):
     return op(name) if name else None
-def _read_chop_channel(op_name, channel_name, default_value):
-    chop = _td_op(op_name)
-    if not chop:
-        return default_value
-
-    try:
-        return float(chop[channel_name][0])
-    except Exception:
-        return default_value
-
-
-def _fade_seconds():
-    return _read_chop_channel(DISPLAY_TIMING_OP, DISPLAY_SECONDS_CHANNEL, DEFAULT_FADE_SECONDS)
-def _hide_delay_seconds():
-    return _read_chop_channel(DISPLAY_TIMING_OP, HIDE_DELAY_SECONDS_CHANNEL, DEFAULT_HIDE_DELAY_SECONDS)
-def _set_par_value(target_op, par_name, value):
-    if not target_op:
-        return False
-
-    par = getattr(target_op.par, par_name, None)
-    if par is None:
-        return False
-
-    par.val = value
-    return True
 
 
 def _pulse_reload(target_op_path):
@@ -230,24 +184,6 @@ def _register_scene(capture_id, scene_key, saved_at):
         BATCH_STATE['completedAt'] = saved_at or _utc_timestamp()
 
 
-def _sync_ready_signal():
-    ready_op = _td_op(READY_STATUS_OP)
-    if not ready_op:
-        return
-
-    if not _set_par_value(
-        ready_op,
-        FADE_TRIGGER_VALUE_PARM,
-        1 if BATCH_STATE['isReady'] else 0
-    ):
-        debug(
-            'TimeWarp bridge: missing ready value parameter {} on {}'.format(
-                FADE_TRIGGER_VALUE_PARM,
-                ready_op.path
-            )
-        )
-
-
 def _sync_info_table(payload, target_path):
     table = _td_op(INFO_TABLE_OP)
     if not table:
@@ -263,16 +199,12 @@ def _sync_info_table(payload, target_path):
         ['targetPath', target_path],
         ['latestImagePath', payload.get('latestImageNormalizedPath', '')],
         ['sourceImagePath', payload.get('sourceImageNormalizedPath', '')],
-        ['fadeTriggerOp', FADE_TRIGGER_OPS.get(payload.get('sceneKey', ''), '')],
         ['batch.captureId', BATCH_STATE['captureId']],
         ['batch.receivedSceneKeys', ','.join(sorted(BATCH_STATE['receivedSceneKeys']))],
         ['batch.receivedSceneCount', len(BATCH_STATE['receivedSceneKeys'])],
         ['batch.expectedSceneCount', len(EXPECTED_SCENE_KEYS)],
         ['batch.isReady', int(BATCH_STATE['isReady'])],
         ['batch.completedAt', BATCH_STATE['completedAt']],
-        ['timing.fadeSeconds', _fade_seconds()],
-        ['timing.hideDelaySeconds', _hide_delay_seconds()],
-        ['timing.sourceOp', DISPLAY_TIMING_OP],
     ]
 
     for scene_key in EXPECTED_SCENE_KEYS:
@@ -282,67 +214,11 @@ def _sync_info_table(payload, target_path):
             ['{}.label'.format(scene_key), state['label']],
             ['{}.targetPath'.format(scene_key), state['targetPath']],
             ['{}.savedAt'.format(scene_key), state['savedAt']],
-            ['{}.lastDisplayedAt'.format(scene_key), state['lastDisplayedAt']],
         ])
 
     table.clear()
     for row in rows:
         table.appendRow(row)
-
-
-def _trigger_fade(scene_key):
-    trigger_name = FADE_TRIGGER_OPS.get(scene_key, '')
-    trigger_op = _td_op(trigger_name)
-    if not trigger_op:
-        debug(
-            'TimeWarp bridge: missing fade trigger operator for {} ({})'.format(
-                scene_key,
-                trigger_name or 'unset'
-            )
-        )
-        return False
-
-    if not _set_par_value(trigger_op, FADE_TRIGGER_VALUE_PARM, FADE_TRIGGER_ACTIVE_VALUE):
-        debug(
-            'TimeWarp bridge: missing fade value parameter {} on {}'.format(
-                FADE_TRIGGER_VALUE_PARM,
-                trigger_op.path
-            )
-        )
-        return False
-
-    hide_delay_seconds = _hide_delay_seconds()
-    if hide_delay_seconds > 0:
-        run(
-            (
-                "listener = op({!r})\n"
-                "target = op({!r})\n"
-                "state = listener.module.SCENE_STATES.get({!r}) if listener else None\n"
-                "par = getattr(target.par, {!r}, None) if target else None\n"
-                "if state and par is not None and state.get('captureId') == {!r}:\n"
-                "    par.val = {!r}\n"
-            ).format(
-                SCRIPT_DAT_PATH,
-                trigger_op.path,
-                scene_key,
-                FADE_TRIGGER_VALUE_PARM,
-                SCENE_STATES[scene_key]['captureId'],
-                FADE_TRIGGER_RESET_VALUE
-            ),
-            delayFrames=_delay_frames(hide_delay_seconds)
-        )
-    return True
-
-
-def _maybe_auto_display():
-    global LAST_AUTO_DISPLAY_CAPTURE_ID
-    capture_id = BATCH_STATE['captureId']
-    if not AUTO_DISPLAY_ON_BATCH_READY or not BATCH_STATE['isReady'] or not capture_id or LAST_AUTO_DISPLAY_CAPTURE_ID == capture_id:
-        return
-
-    LAST_AUTO_DISPLAY_CAPTURE_ID = capture_id
-    for ready_scene_key in EXPECTED_SCENE_KEYS:
-        display_scene(ready_scene_key)
 
 
 def _apply_capture_payload(payload):
@@ -379,9 +255,7 @@ def _apply_capture_payload(payload):
         'savedAt': payload.get('savedAt', ''),
         'payload': payload,
     })
-    _sync_ready_signal()
     _sync_info_table(payload, target_path or source_path)
-    _maybe_auto_display()
     return True
 
 
@@ -400,41 +274,6 @@ def resync_latest_scenes(expected_capture_id=''):
     for payload in payloads:
         _apply_capture_payload(payload)
     return bool(payloads)
-
-
-def display_scene(scene_key):
-    state = SCENE_STATES.get(scene_key)
-    if not state or not state['targetPath']:
-        debug('TimeWarp bridge: no loaded scene is ready for {}'.format(scene_key))
-        return False
-
-    if not BATCH_STATE['isReady'] and not ALLOW_REDISPLAY_LOADED_SCENE:
-        debug('TimeWarp bridge: capture batch {} is not complete yet'.format(BATCH_STATE['captureId']))
-        return False
-
-    if not state['ready'] and not ALLOW_REDISPLAY_LOADED_SCENE:
-        debug('TimeWarp bridge: scene {} is not marked ready'.format(scene_key))
-        return False
-
-    if not _trigger_fade(scene_key):
-        return False
-
-    state['lastDisplayedAt'] = _utc_timestamp()
-    _sync_info_table(state['payload'], state['targetPath'])
-    return True
-
-
-def display_latest_ready_scene():
-    ready_scene_keys = [
-        scene_key for scene_key, state in SCENE_STATES.items()
-        if state['ready'] and state['targetPath']
-    ]
-    if not ready_scene_keys:
-        debug('TimeWarp bridge: no ready scene is waiting for display')
-        return False
-
-    latest_scene_key = max(ready_scene_keys, key=lambda key: SCENE_STATES[key]['savedAt'])
-    return display_scene(latest_scene_key)
 
 
 def request_capture():
@@ -460,6 +299,80 @@ def request_capture():
     command_id = response.get('command', {}).get('id', '?')
     _debug('Queued remote capture command via HTTP #{}.'.format(command_id))
     return response
+
+
+def _channel_name(channel):
+    try:
+        return str(channel.name).lower()
+    except Exception:
+        return ''
+
+
+def _channel_owner_path(channel):
+    owner = getattr(channel, 'owner', None)
+    return getattr(owner, 'path', '') if owner is not None else ''
+
+
+def _is_start_generation_key(channel):
+    channel_name = _channel_name(channel)
+    if channel_name not in START_GENERATION_KEY_CHANNELS:
+        return False
+
+    owner_path = _channel_owner_path(channel)
+    return not START_GENERATION_KEYBOARD_OP_PATHS or owner_path in START_GENERATION_KEYBOARD_OP_PATHS
+
+
+def _matches_stream_key(channel, channel_names):
+    channel_name = _channel_name(channel)
+    if channel_name not in channel_names:
+        return False
+
+    owner_path = _channel_owner_path(channel)
+    return not STREAM_KEYBOARD_OP_PATHS or owner_path in STREAM_KEYBOARD_OP_PATHS
+
+
+def _handle_panel_off_to_on(panelValue):
+    owner_path = panelValue.owner.path
+
+    if owner_path == START_GENERATION_BUTTON_PATH:
+        return request_capture()
+    if owner_path == START_STREAM_BUTTON_PATH:
+        return start_stream()
+    if owner_path == STOP_STREAM_BUTTON_PATH:
+        return stop_stream()
+
+    return
+
+
+def _handle_chop_off_to_on(channel):
+    if not _is_start_generation_key(channel):
+        if _matches_stream_key(channel, START_STREAM_KEY_CHANNELS):
+            _debug(
+                'Starting WebRTC receiver from key "{}" on {}.'.format(
+                    _channel_name(channel),
+                    _channel_owner_path(channel) or '<unknown>'
+                )
+            )
+            return start_stream()
+
+        if _matches_stream_key(channel, STOP_STREAM_KEY_CHANNELS):
+            _debug(
+                'Stopping WebRTC receiver from key "{}" on {}.'.format(
+                    _channel_name(channel),
+                    _channel_owner_path(channel) or '<unknown>'
+                )
+            )
+            return stop_stream()
+
+        return
+
+    _debug(
+        'Queued remote capture command from key "{}" on {}.'.format(
+            _channel_name(channel),
+            _channel_owner_path(channel) or '<unknown>'
+        )
+    )
+    return request_capture()
 
 
 def start_stream():
@@ -488,34 +401,25 @@ def onReceive(dat, rowIndex, message, bytes, peer):
         resync_latest_scenes(payload.get('captureId', ''))
 
 
-def onOffToOn(panelValue):
-    owner_path = panelValue.owner.path
-
-    if owner_path in DISPLAY_BUTTON_PATHS:
-        return display_scene(DISPLAY_BUTTON_PATHS[owner_path])
-    if owner_path == DISPLAY_LATEST_READY_BUTTON_PATH:
-        return display_latest_ready_scene()
-    if owner_path == START_GENERATION_BUTTON_PATH:
-        return request_capture()
-    if owner_path == START_STREAM_BUTTON_PATH:
-        return start_stream()
-    if owner_path == STOP_STREAM_BUTTON_PATH:
-        return stop_stream()
-
+def onOffToOn(*args):
+    if len(args) == 1:
+        return _handle_panel_off_to_on(args[0])
+    if len(args) >= 4:
+        return _handle_chop_off_to_on(args[0])
     return
 
 
-def whileOn(panelValue):
+def whileOn(*args):
     return
 
 
-def onOnToOff(panelValue):
+def onOnToOff(*args):
     return
 
 
-def whileOff(panelValue):
+def whileOff(*args):
     return
 
 
-def onValueChange(panelValue, prev):
+def onValueChange(*args):
     return

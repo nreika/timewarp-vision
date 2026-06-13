@@ -15,13 +15,10 @@ CONTROL_TRANSPORT = 'udp'
 CONTROL_UDP_HOST = '127.0.0.1'
 CONTROL_UDP_PORT = 9990
 
-DISPLAY_BUTTON_PATHS = {
-    '/project1/display_scene_a_btn': 'sceneA',
-    '/project1/display_scene_b_btn': 'sceneB',
-    '/project1/display_scene_c_btn': 'sceneC',
-}
-DISPLAY_LATEST_READY_BUTTON_PATH = '/project1/display_latest_ready_btn'
+
 START_GENERATION_BUTTON_PATH = '/project1/start_generation_btn'
+START_GENERATION_KEYBOARD_OP_PATHS = ('/project1/keyboardin1',)
+START_GENERATION_KEY_CHANNELS = ('1', 'k1', 'num1', 'numpad1')
 
 
 def _debug(message):
@@ -97,6 +94,49 @@ def request_capture():
     return response
 
 
+def _channel_name(channel):
+    try:
+        return str(channel.name).lower()
+    except Exception:
+        return ''
+
+
+def _channel_owner_path(channel):
+    owner = getattr(channel, 'owner', None)
+    return getattr(owner, 'path', '') if owner is not None else ''
+
+
+def _is_start_generation_key(channel):
+    channel_name = _channel_name(channel)
+    if channel_name not in START_GENERATION_KEY_CHANNELS:
+        return False
+
+    owner_path = _channel_owner_path(channel)
+    return not START_GENERATION_KEYBOARD_OP_PATHS or owner_path in START_GENERATION_KEYBOARD_OP_PATHS
+
+
+def _handle_panel_off_to_on(panelValue):
+    owner_path = panelValue.owner.path
+
+    if owner_path == START_GENERATION_BUTTON_PATH:
+        return request_capture()
+
+    return
+
+
+def _handle_chop_off_to_on(channel):
+    if not _is_start_generation_key(channel):
+        return
+
+    _debug(
+        'Queued remote capture command from key "{}" on {}.'.format(
+            _channel_name(channel),
+            _channel_owner_path(channel) or '<unknown>'
+        )
+    )
+    return request_capture()
+
+
 def onReceive(dat, rowIndex, message, bytes, peer):
     _debug(
         'This DAT is a Panel Execute callback, not a UDP In callback. '
@@ -105,30 +145,25 @@ def onReceive(dat, rowIndex, message, bytes, peer):
     return
 
 
-def onOffToOn(panelValue):
-    owner_path = panelValue.owner.path
-
-    if owner_path in DISPLAY_BUTTON_PATHS:
-        display_scene(DISPLAY_BUTTON_PATHS[owner_path])
-    elif owner_path == DISPLAY_LATEST_READY_BUTTON_PATH:
-        display_latest_ready_scene()
-    elif owner_path == START_GENERATION_BUTTON_PATH:
-        request_capture()
-
+def onOffToOn(*args):
+    if len(args) == 1:
+        return _handle_panel_off_to_on(args[0])
+    if len(args) >= 4:
+        return _handle_chop_off_to_on(args[0])
     return
 
 
-def whileOn(panelValue):
+def whileOn(*args):
     return
 
 
-def onOnToOff(panelValue):
+def onOnToOff(*args):
     return
 
 
-def whileOff(panelValue):
+def whileOff(*args):
     return
 
 
-def onValueChange(panelValue, prev):
+def onValueChange(*args):
     return

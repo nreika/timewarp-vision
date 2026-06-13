@@ -50,6 +50,22 @@ With the defaults in this repository:
 - pressing `stop_stream_btn` runs:
   `op('/project1/webrtc1_callbacks1').module.stop()`
 
+You can also map the same stream controls to `Keyboard In CHOP`:
+
+1. Create a `Keyboard In CHOP` named `keyboardin1`
+2. Create a `CHOP Execute DAT`
+3. Paste in `td_webrtc_panel_controls.py` or `td_capture_listener.py`
+4. In the `CHOP Execute DAT` parameters:
+   - `CHOP`: `/project1/keyboardin1`
+   - `Off to On`: `On`
+   - `While On`: `Off`
+   - `On to Off`: `Off`
+   - `Value Change`: `Off`
+5. Press `0` to start the stream
+6. Press `9` to stop the stream
+
+With the defaults in this repository, the script listens for `0` / `9` and also accepts `k0` / `k9`, `num0` / `num9`, or `numpad0` / `numpad9` if your `Keyboard In CHOP` names them that way. If your channel names differ, edit `START_STREAM_KEY_CHANNELS` or `STOP_STREAM_KEY_CHANNELS`.
+
 ### Signaling API
 
 The receiver script polls the local Node server:
@@ -96,9 +112,6 @@ Each message contains:
 7. Create one more `Movie File In TOP` named `moviefilein_original` if you also want to display the captured source image
 8. Optional: keep a fallback single `Movie File In TOP` named `moviefilein1`
 9. Optional: create a `Table DAT` named `capture_info`
-10. Optional: create one `Constant CHOP` named `ready_state_all`
-11. Optional: create three `Constant CHOP` operators named `fade_trigger_scene_a`, `fade_trigger_scene_b`, `fade_trigger_scene_c`
-12. Optional: create one `Constant CHOP` named `display_timing`
 
 If you see `Cannot find function named: onReceive`, your `UDP In DAT` is pointing at the wrong script. The callback DAT for the UDP listener must be `td_capture_listener.py`, not `td_webrtc_panel_controls.py` or `td_capture_panel_controls.py`.
 
@@ -121,43 +134,20 @@ This is intentionally not tied to `sceneA`, `sceneB`, or `sceneC` individually. 
 
 To decide the reveal timing in TouchDesigner, add a small control panel:
 
-1. Optional: create three `Button COMP`s named `display_scene_a_btn`, `display_scene_b_btn`, `display_scene_c_btn`
-2. Optional: create one more `Button COMP` named `display_latest_ready_btn`
-3. Set the buttons to a momentary type
-4. Create a `Panel Execute DAT`
-5. Paste in `td_capture_panel_controls.py`
-6. In the `Panel Execute DAT` parameters:
-   - `Panels`: `/project1/display_scene_a_btn /project1/display_scene_b_btn /project1/display_scene_c_btn /project1/display_latest_ready_btn /project1/start_generation_btn`
-   - `Panel Value`: `state`
+1. Create a `Keyboard In CHOP` named `keyboardin1`
+2. Turn on the CHOP so it outputs a `1` channel when you press the `1` key
+3. Create a `CHOP Execute DAT`
+4. Paste in `td_capture_panel_controls.py` or `td_capture_listener.py`
+5. In the `CHOP Execute DAT` parameters:
+   - `CHOP`: `/project1/keyboardin1`
    - `Off to On`: `On`
-7. Edit the constants at the top of `td_capture_panel_controls.py` if your paths differ
+   - `While On`: `Off`
+   - `On to Off`: `Off`
+   - `Value Change`: `Off`
+6. If your operator path differs, edit `START_GENERATION_KEYBOARD_OP_PATHS`
+7. If you want a different key, edit `START_GENERATION_KEY_CHANNELS`
 
-If you want fewer DATs to manage, you can reuse `td_capture_listener.py` for this `Panel Execute DAT` too. It now implements the same button callbacks directly.
-
-If you do not create `display_latest_ready_btn` or `start_generation_btn`, remove those paths from the `Panels` field.
-
-With the defaults in this repository:
-
-- pressing `display_scene_a_btn` runs `op('/project1/td_capture_listener1').module.display_scene('sceneA')`
-- pressing `display_scene_b_btn` runs `op('/project1/td_capture_listener1').module.display_scene('sceneB')`
-- pressing `display_scene_c_btn` runs `op('/project1/td_capture_listener1').module.display_scene('sceneC')`
-- pressing `display_latest_ready_btn` runs `op('/project1/td_capture_listener1').module.display_latest_ready_scene()`
-
-`display_scene()` fires the fade trigger immediately for that one scene. Separately, when the current capture batch becomes complete, `td_capture_listener.py` automatically triggers all three scene fades.
-
-For a visible reveal, make sure `fade_trigger_scene_a` / `b` / `c` exist or point `FADE_TRIGGER_OPS` at your own trigger operators.
-
-### Optional: Trigger Generation from TouchDesigner
-
-You can also start a new prediction batch from TouchDesigner:
-
-1. Create a `Button COMP` named `start_generation_btn`
-2. Keep the browser app open and allow camera access
-3. In the browser sidebar, keep `Session_ID` aligned with the `SESSION_ID` constant in `td_capture_panel_controls.py` or `td_capture_listener.py`
-4. Keep `CONTROL_TRANSPORT = 'udp'` in `td_capture_panel_controls.py` or `td_capture_listener.py`
-5. Press `start_generation_btn`
-
-With the defaults in this repository, that button sends this UDP JSON packet to the local Node server:
+With the defaults in this repository, both the button and the `1` key send this UDP JSON packet to the local Node server. The script accepts channel names like `1`, `k1`, `num1`, and `numpad1`.
 
 ```json
 {
@@ -171,54 +161,11 @@ Default UDP control destination:
 - host: `127.0.0.1`
 - port: `9990`
 
-The Node server listens for that packet, pushes the same internal capture command queue used by the HTTP endpoint, and the browser app polls that queue while its camera stream is ready. In other words, the UDP button triggers the same capture flow as the on-screen `Initiate_Scan` button.
+The Node server listens for that packet, pushes the same internal capture command queue used by the HTTP endpoint, and the browser app polls that queue while its camera stream is ready. In other words, the UDP button or the `1` key triggers the same capture flow as the on-screen `Initiate_Scan` button.
 
 If you prefer the previous HTTP method, set `CONTROL_TRANSPORT = 'http'` in `td_capture_panel_controls.py` or `td_capture_listener.py`. In that mode the same button calls:
 
 - `POST /api/touchdesigner-control/session/<sessionId>/capture`
-
-### Optional: Control Reveal Timing in TouchDesigner
-
-If you want to adjust both values inside TouchDesigner, use one shared `Constant CHOP`:
-
-1. Create `display_timing` as a `Constant CHOP`
-2. Rename channel 1 to `fade_seconds`
-3. Rename channel 2 to `hide_delay_seconds`
-4. Set `fade_seconds` to how long the reveal should take, for example `2`
-5. Set `hide_delay_seconds` to how long after the reveal starts the trigger should return to `0`, for example `5`
-
-Then wire the reveal itself like this for each screen:
-
-1. Create `fade_trigger_scene_a` as a `Constant CHOP`
-2. Connect it to a `Filter CHOP`
-3. Drag `display_timing/fade_seconds` onto that `Filter CHOP` `Filter Width` parameter as a reference or export
-4. Use the filtered channel to drive the generated image opacity, for example with a `Level TOP` `Opacity` parameter or a `Cross TOP`
-5. Repeat the same pattern for `sceneB` and `sceneC`
-
-`td_capture_listener.py` reads `display_timing/hide_delay_seconds` automatically, so you only need to wire `fade_seconds` into the `Filter CHOP` width on the TouchDesigner side.
-
-In other words:
-
-- new image saved by the app
-- UDP message reaches TouchDesigner
-- `td_capture_listener.py` reloads the image and records that scene as received for the current `captureId`
-- once `sceneA`, `sceneB`, and `sceneC` are all present for that same `captureId`, `ready_state_all` rises to `1`
-- the listener automatically drives each `fade_trigger_scene_x` high
-- after `display_timing/hide_delay_seconds` seconds, the listener drives those trigger channels back to `0`
-- `fade_trigger_scene_x` rises from `0` to `1`
-- `Filter CHOP` width follows `display_timing/fade_seconds`, so both the rise and the return use that timing
-
-If you want a different trigger style, edit the constants at the top of `td_capture_listener.py`:
-
-- `READY_STATUS_OP`: optional shared batch-ready indicator operator
-- `DISPLAY_TIMING_OP`: optional timing-control CHOP, default is `display_timing`
-- `FADE_TRIGGER_OPS`: which operator is used for each scene
-- `FADE_TRIGGER_VALUE_PARM`: which numeric parameter to drive, default is `value0`
-- `FADE_TRIGGER_RESET_VALUE`: value written before the trigger
-- `FADE_TRIGGER_ACTIVE_VALUE`: value written on the trigger frame
-- `AUTO_DISPLAY_ON_BATCH_READY`: whether to reveal all screens automatically once the batch is complete
-- `DEFAULT_FADE_SECONDS`: fallback reveal duration when `display_timing` is missing
-- `DEFAULT_HIDE_DELAY_SECONDS`: fallback delay before returning to `0` when `display_timing` is missing
 
 ## Notes
 
