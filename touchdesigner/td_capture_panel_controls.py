@@ -19,6 +19,10 @@ CONTROL_UDP_PORT = 9990
 START_GENERATION_BUTTON_PATH = '/project1/start_generation_btn'
 START_GENERATION_KEYBOARD_OP_PATHS = ('/project1/keyboardin1',)
 START_GENERATION_KEY_CHANNELS = ('1', 'k1', 'num1', 'numpad1')
+GENERATION_COUNT_OP_PATH = '/project1/generation_count'
+DEFAULT_IMAGE_COUNT = 3
+MIN_IMAGE_COUNT = 1
+MAX_IMAGE_COUNT = 10
 
 
 def _debug(message):
@@ -34,6 +38,53 @@ def _listener_dat():
 
 def _listener_module():
     return _listener_dat().module
+
+
+def _clamp_image_count(value):
+    try:
+        numeric_value = int(round(float(value)))
+    except Exception:
+        return DEFAULT_IMAGE_COUNT
+
+    return max(MIN_IMAGE_COUNT, min(MAX_IMAGE_COUNT, numeric_value))
+
+
+def _read_generation_count():
+    count_op = op(GENERATION_COUNT_OP_PATH)
+    if count_op is None:
+        return DEFAULT_IMAGE_COUNT
+
+    try:
+        if hasattr(count_op, 'numChans') and count_op.numChans > 0:
+            channels = count_op.chans()
+            if channels:
+                return _clamp_image_count(channels[0].eval())
+    except Exception:
+        pass
+
+    par = getattr(getattr(count_op, 'par', None), 'value0', None)
+    if par is None:
+        panel = getattr(count_op, 'panel', None)
+        if panel is None:
+            return DEFAULT_IMAGE_COUNT
+
+        for attr_name in ('value', 'state', 'select'):
+            panel_value = getattr(panel, attr_name, None)
+            if panel_value is None:
+                continue
+
+            try:
+                raw_value = panel_value.eval() if hasattr(panel_value, 'eval') else panel_value
+                return _clamp_image_count(raw_value)
+            except Exception:
+                continue
+
+        return DEFAULT_IMAGE_COUNT
+
+    try:
+        return _clamp_image_count(par.eval())
+    except Exception:
+        return DEFAULT_IMAGE_COUNT
 
 
 def _post_json(url, payload):
@@ -70,16 +121,19 @@ def display_latest_ready_scene():
 
 
 def request_capture():
+    image_count = _read_generation_count()
     if CONTROL_TRANSPORT.lower() == 'udp':
         payload = {
             'type': 'capture',
             'sessionId': SESSION_ID,
+            'imageCount': image_count,
         }
         _send_udp_json(CONTROL_UDP_HOST, CONTROL_UDP_PORT, payload)
         _debug(
-            'Queued remote capture command via udp://{}:{}.'.format(
+            'Queued remote capture command via udp://{}:{} (imageCount={}).'.format(
                 CONTROL_UDP_HOST,
-                CONTROL_UDP_PORT
+                CONTROL_UDP_PORT,
+                image_count
             )
         )
         return payload
@@ -88,9 +142,9 @@ def request_capture():
         SERVER_BASE_URL.rstrip('/'),
         SESSION_ID
     )
-    response = _post_json(url, {})
+    response = _post_json(url, {'imageCount': image_count})
     command_id = response.get('command', {}).get('id', '?')
-    _debug('Queued remote capture command via HTTP #{}.'.format(command_id))
+    _debug('Queued remote capture command via HTTP #{} (imageCount={}).'.format(command_id, image_count))
     return response
 
 

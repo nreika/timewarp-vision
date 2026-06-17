@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { Target, PredictionData } from '../types';
 
 interface CameraPreviewProps {
-  onCapture: (base64: string) => void;
+  onCapture: (base64: string, requestedImageCount?: number) => void;
   isProcessing: boolean;
   target: Target | null;
   onSetTarget: (target: Target | null) => void;
@@ -13,7 +13,7 @@ interface CameraPreviewProps {
   selectedTimelineIndex: number;
   showFuture: boolean;
   setShowFuture: (show: boolean) => void;
-  captureRequestId?: number;
+  captureRequest?: { id: number; imageCount: number } | null;
   onCaptureRequestHandled?: (requestId: number) => void;
 }
 
@@ -28,7 +28,7 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
   selectedTimelineIndex,
   showFuture,
   setShowFuture,
-  captureRequestId = 0,
+  captureRequest = null,
   onCaptureRequestHandled
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -101,7 +101,7 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
     onSetTarget({ x, y });
   };
 
-  const captureFrame = useCallback(() => {
+  const captureFrame = useCallback((requestedImageCount?: number) => {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) {
@@ -114,7 +114,7 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        onCapture(canvas.toDataURL('image/jpeg', 0.8));
+        onCapture(canvas.toDataURL('image/jpeg', 0.8), requestedImageCount);
         return true;
       }
     }
@@ -122,6 +122,7 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
   }, [onCapture]);
 
   useEffect(() => {
+    const captureRequestId = captureRequest?.id || 0;
     if (!captureRequestId) {
       return;
     }
@@ -130,11 +131,11 @@ const CameraPreview: React.FC<CameraPreviewProps> = ({
       return;
     }
 
-    if (captureFrame()) {
+    if (captureFrame(captureRequest?.imageCount)) {
       lastHandledCaptureRequestIdRef.current = captureRequestId;
       onCaptureRequestHandled?.(captureRequestId);
     }
-  }, [captureFrame, captureRequestId, isProcessing, isVideoReady, onCaptureRequestHandled]);
+  }, [captureFrame, captureRequest, isProcessing, isVideoReady, onCaptureRequestHandled]);
 
   const currentTimeline = prediction?.items[selectedTimelineIndex];
 

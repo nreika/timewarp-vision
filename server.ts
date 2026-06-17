@@ -11,6 +11,7 @@ interface CaptureEvent {
   captureId: string;
   sceneKey: string;
   sceneIndex: number | null;
+  expectedImageCount: number;
   label: string;
   filename: string;
   absolutePath: string;
@@ -78,12 +79,14 @@ type TouchDesignerControlCommandType = 'capture';
 interface TouchDesignerControlCommand {
   id: number;
   type: TouchDesignerControlCommandType;
+  imageCount: number;
   createdAt: string;
 }
 
 interface ParsedTouchDesignerControlMessage {
   sessionId: string;
   type: TouchDesignerControlCommandType;
+  imageCount: number;
 }
 
 interface TouchDesignerControlSession {
@@ -98,6 +101,9 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || '3000');
   const HMR_PORT = Number(process.env.HMR_PORT || '24679');
+  const defaultImageCount = 3;
+  const minImageCount = 1;
+  const maxImageCount = 10;
 
   // Ensure captures directory exists
   const capturesDir = path.join(process.cwd(), 'captures');
@@ -145,6 +151,14 @@ async function startServer() {
     }
 
     return rawValue.replace(/[^a-zA-Z0-9_-]/g, '') || String(Date.now());
+  };
+  const normalizeImageCount = (value: unknown) => {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return defaultImageCount;
+    }
+
+    return Math.min(maxImageCount, Math.max(minImageCount, Math.round(numericValue)));
   };
   const getImageExtension = (mimeType: string) => {
     switch (mimeType.toLowerCase()) {
@@ -281,12 +295,14 @@ async function startServer() {
   };
   const enqueueTouchDesignerControlCommand = (
     sessionId: string,
-    type: TouchDesignerControlCommandType
+    type: TouchDesignerControlCommandType,
+    imageCount: number
   ) => {
     const session = getTouchDesignerControlSession(sessionId) || createTouchDesignerControlSession(sessionId);
     const command: TouchDesignerControlCommand = {
       id: session.nextCommandId++,
       type,
+      imageCount: normalizeImageCount(imageCount),
       createdAt: new Date().toISOString()
     };
 
@@ -297,12 +313,15 @@ async function startServer() {
     session.updatedAt = command.createdAt;
     return { session, command };
   };
-  const queueTouchDesignerCapture = (sessionId: string, source: string) => {
+  const queueTouchDesignerCapture = (sessionId: string, source: string, imageCount = defaultImageCount) => {
     cleanupExpiredTouchDesignerControlSessions();
 
     const normalizedSessionId = normalizeSessionId(sessionId);
-    const { session, command } = enqueueTouchDesignerControlCommand(normalizedSessionId, 'capture');
-    console.log(`TouchDesigner remote capture queued via ${source} for session "${normalizedSessionId}" (#${command.id}).`);
+    const normalizedImageCount = normalizeImageCount(imageCount);
+    const { session, command } = enqueueTouchDesignerControlCommand(normalizedSessionId, 'capture', normalizedImageCount);
+    console.log(
+      `TouchDesigner remote capture queued via ${source} for session "${normalizedSessionId}" (#${command.id}, imageCount=${normalizedImageCount}).`
+    );
     return { session, command };
   };
   const parseTouchDesignerControlMessage = (messageText: string): ParsedTouchDesignerControlMessage | null => {
@@ -318,7 +337,8 @@ async function startServer() {
         if (type === 'capture') {
           return {
             type: 'capture',
-            sessionId: normalizeSessionId(parsed.sessionId)
+            sessionId: normalizeSessionId(parsed.sessionId),
+            imageCount: normalizeImageCount(parsed.imageCount ?? parsed.count)
           };
         }
       }
@@ -326,11 +346,12 @@ async function startServer() {
       // Fallback to a compact plain-text protocol below.
     }
 
-    const [rawType, rawSessionId] = trimmed.split(':', 2);
+    const [rawType, rawSessionId, rawImageCount] = trimmed.split(':', 3);
     if (rawType === 'capture') {
       return {
         type: 'capture',
-        sessionId: normalizeSessionId(rawSessionId)
+        sessionId: normalizeSessionId(rawSessionId),
+        imageCount: normalizeImageCount(rawImageCount)
       };
     }
 
@@ -503,7 +524,8 @@ async function startServer() {
 
   app.post('/api/touchdesigner-control/session/:sessionId/capture', (req, res) => {
     const sessionId = normalizeSessionId(req.params.sessionId);
-    const { session, command } = queueTouchDesignerCapture(sessionId, 'http');
+    const imageCount = normalizeImageCount(req.body?.imageCount);
+    const { session, command } = queueTouchDesignerCapture(sessionId, 'http', imageCount);
     res.json({
       success: true,
       command,
@@ -552,7 +574,7 @@ async function startServer() {
 
   // API to save images
   app.post('/api/save-image', (req, res) => {
-    const { image, originalImage, captureId, label, sceneKey, sceneIndex } = req.body;
+    const { image, originalImage, captureId, label, sceneKey, sceneIndex, expectedImageCount } = req.body;
     if (typeof image !== 'string' || !image.trim()) {
       return res.status(400).json({ error: 'No image data provided' });
     }
@@ -569,6 +591,7 @@ async function startServer() {
         captureId: normalizedCaptureId,
         sceneKey: safeSceneKey,
         sceneIndex: Number.isInteger(sceneIndex) ? Number(sceneIndex) : null,
+        expectedImageCount: normalizeImageCount(expectedImageCount),
         label: safeLabel,
         filename: savedImageAsset.filename,
         absolutePath: savedImageAsset.absolutePath,
@@ -625,7 +648,7 @@ async function startServer() {
     }
 
     if (parsed.type === 'capture') {
-      queueTouchDesignerCapture(parsed.sessionId, `udp://${peer.address}:${peer.port}`);
+      queueTouchDesignerCapture(parsed.sessionId, `udp://${peer.address}:${peer.port}`, parsed.imageCount);
     }
   });
 

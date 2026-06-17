@@ -9,6 +9,22 @@ import { normalizeTouchDesignerSessionId, useTouchDesignerBridge } from './hooks
 
 const getSceneKey = (index: number) => `scene${String.fromCharCode(65 + index)}`;
 const TOUCHDESIGNER_SESSION_STORAGE_KEY = 'timewarp.touchdesigner.sessionId';
+const DEFAULT_GENERATION_COUNT = 3;
+const MIN_GENERATION_COUNT = 1;
+const MAX_GENERATION_COUNT = 10;
+
+interface RemoteCaptureCommand {
+  id: number;
+  imageCount: number;
+}
+
+const clampGenerationCount = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_GENERATION_COUNT;
+  }
+
+  return Math.min(MAX_GENERATION_COUNT, Math.max(MIN_GENERATION_COUNT, Math.round(value)));
+};
 
 const getInitialTouchDesignerSessionId = () => {
   if (typeof window === 'undefined') {
@@ -62,7 +78,7 @@ const App: React.FC = () => {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [touchDesignerBridgeEnabled, setTouchDesignerBridgeEnabled] = useState(false);
   const [touchDesignerSessionId, setTouchDesignerSessionId] = useState<string>(() => getInitialTouchDesignerSessionId());
-  const [remoteCaptureQueue, setRemoteCaptureQueue] = useState<number[]>([]);
+  const [remoteCaptureQueue, setRemoteCaptureQueue] = useState<RemoteCaptureCommand[]>([]);
   const [remoteControlError, setRemoteControlError] = useState<string | null>(null);
   const remoteControlAfterRef = useRef(0);
   
@@ -124,17 +140,22 @@ const App: React.FC = () => {
         }
 
         const items = Array.isArray(data.items) ? data.items : [];
-        const captureCommandIds = items
-          .filter((item): item is { id: number; type: string } => typeof item?.id === 'number' && typeof item?.type === 'string')
+        const captureCommands = items
+          .filter((item): item is { id: number; type: string; imageCount?: number } => typeof item?.id === 'number' && typeof item?.type === 'string')
           .filter((item) => item.type === 'capture')
-          .map((item) => item.id);
+          .map((item) => ({
+            id: item.id,
+            imageCount: clampGenerationCount(
+              typeof item.imageCount === 'number' ? item.imageCount : DEFAULT_GENERATION_COUNT
+            )
+          }));
 
-        if (captureCommandIds.length > 0) {
+        if (captureCommands.length > 0) {
           setRemoteCaptureQueue((current) => {
             const next = [...current];
-            captureCommandIds.forEach((id) => {
-              if (!next.includes(id)) {
-                next.push(id);
+            captureCommands.forEach((command) => {
+              if (!next.some((item) => item.id === command.id)) {
+                next.push(command);
               }
             });
             return next;
@@ -166,13 +187,14 @@ const App: React.FC = () => {
     };
   }, [cameraStream, normalizedTouchDesignerSessionId]);
 
-  const handleCapture = useCallback(async (base64: string) => {
+  const handleCapture = useCallback(async (base64: string, requestedImageCount = DEFAULT_GENERATION_COUNT) => {
     setAppState(AppState.ANALYZING);
     setError(null);
     setSelectedTimelineIndex(0);
 
     try {
-      const scenarios = await predictFutureScenarios(base64, target);
+      const imageCount = clampGenerationCount(requestedImageCount);
+      const scenarios = await predictFutureScenarios(base64, target, imageCount);
       setAppState(AppState.GENERATING);
 
       const items: PredictionItem[] = await Promise.all(
@@ -187,7 +209,8 @@ const App: React.FC = () => {
       const prediction: PredictionData = {
         originalImage: base64,
         items,
-        timestamp: captureTimestamp
+        timestamp: captureTimestamp,
+        requestedImageCount: imageCount
       };
 
       setLastPrediction(prediction);
@@ -204,7 +227,8 @@ const App: React.FC = () => {
               captureId: String(prediction.timestamp),
               label: item.label,
               sceneKey: getSceneKey(index),
-              sceneIndex: index
+              sceneIndex: index,
+              expectedImageCount: prediction.items.length
             })
           })
         ));
@@ -246,7 +270,7 @@ const App: React.FC = () => {
   }, [cameraStream]);
 
   const handleRemoteCaptureRequestHandled = useCallback((requestId: number) => {
-    setRemoteCaptureQueue((current) => current.filter((id) => id !== requestId));
+    setRemoteCaptureQueue((current) => current.filter((item) => item.id !== requestId));
   }, []);
 
   return (
@@ -296,7 +320,7 @@ const App: React.FC = () => {
             selectedTimelineIndex={selectedTimelineIndex}
             showFuture={showFuture}
             setShowFuture={setShowFuture}
-            captureRequestId={remoteCaptureQueue[0] || 0}
+            captureRequest={remoteCaptureQueue[0] || null}
             onCaptureRequestHandled={handleRemoteCaptureRequestHandled}
           />
         </section>

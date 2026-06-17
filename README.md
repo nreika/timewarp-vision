@@ -96,6 +96,7 @@ The payload looks like this:
   "captureId": "1776156364832",
   "sceneKey": "sceneA",
   "sceneIndex": 0,
+  "expectedImageCount": 3,
   "label": "Timeline_A",
   "filename": "timewarp_Timeline_A_1776156364832.png",
   "absolutePath": "C:/.../captures/timewarp_Timeline_A_1776156364832.png",
@@ -116,3 +117,5 @@ The payload looks like this:
 ```
 
 TouchDesigner sample files are in [touchdesigner/README.md](./touchdesigner/README.md).
+
+TouchDesigner-triggered captures can now set `imageCount` from `1` to `10`. The browser app uses that value to decide how many future images to generate for the current capture batch.

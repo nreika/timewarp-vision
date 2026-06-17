@@ -95,7 +95,8 @@ The Node server sends one UDP JSON message per saved image to `127.0.0.1:9989` b
 
 Each message contains:
 
-- The scene key (`sceneA`, `sceneB`, `sceneC`)
+- The scene key (`sceneA` to `sceneJ`)
+- The expected image count for the current capture batch
 - The saved image path
 - A normalized forward-slash path for Windows
 - The newest timestamped file path for that scene
@@ -108,7 +109,9 @@ Each message contains:
 3. Set `Row/Callback Format` to `One Per Message`
 4. Create a `Text DAT` and paste in `td_capture_listener.py`
 5. Point the `UDP In DAT` `Callbacks DAT` parameter at that script
-6. Create three `Movie File In TOP` operators named `moviefilein_scene_a`, `moviefilein_scene_b`, `moviefilein_scene_c`
+6. Create `Movie File In TOP` operators for the scene slots you want to support:
+   `moviefilein_scene_a` to `moviefilein_scene_j`
+   If you only use up to 3 images, `moviefilein_scene_a` to `moviefilein_scene_c` are enough.
 7. Create one more `Movie File In TOP` named `moviefilein_original` if you also want to display the captured source image
 8. Optional: keep a fallback single `Movie File In TOP` named `moviefilein1`
 9. Optional: create a `Table DAT` named `capture_info`
@@ -119,40 +122,45 @@ When a message arrives, the callback now does four things:
 
 - It reloads the matching generated-image `Movie File In TOP` with the newest timestamped file.
 - If `moviefilein_original` exists, it also reloads the captured source image.
-- It tracks which of `sceneA` / `sceneB` / `sceneC` have arrived for the current `captureId`.
-- It raises a shared `ready` state only after all three scene messages for the same `captureId` have arrived.
+- It tracks which scene keys have arrived for the current `captureId`.
+- It raises a shared `ready` state only after the expected number of scene messages for that `captureId` have arrived.
 - It updates `capture_info` with both the newest payload and per-scene ready state.
 - If one UDP message is missed, it can recover the latest batch from `http://127.0.0.1:3000/api/latest-captures`.
 
-By default, once all three scene images for the same `captureId` arrive, TouchDesigner automatically starts revealing them. The reveal signal stays high for 5 seconds and then returns to `0`, so you can use a `Filter CHOP` to create a soft fade in and fade out. If `display_timing` exists, the listener reads `fade_seconds` and `hide_delay_seconds` from that CHOP instead of using the defaults.
+By default, once all expected scene images for the same `captureId` arrive, TouchDesigner automatically starts revealing them. The reveal signal stays high for 5 seconds and then returns to `0`, so you can use a `Filter CHOP` to create a soft fade in and fade out. If `display_timing` exists, the listener reads `fade_seconds` and `hide_delay_seconds` from that CHOP instead of using the defaults.
 
-If `ready_state_all` exists, the callback writes `value0 = 1` only when all three timeline images for the current capture batch have arrived. This is useful for a single "all assets ready" lamp or for enabling your display buttons.
+If `ready_state_all` exists, the callback writes `value0 = 1` only when all requested timeline images for the current capture batch have arrived. This is useful for a single "all assets ready" lamp or for enabling your display buttons.
 
-This is intentionally not tied to `sceneA`, `sceneB`, or `sceneC` individually. The app saves those three images in parallel, so there is no guaranteed rule like "when sceneC arrives, the batch is complete". Instead, `td_capture_listener.py` counts the received scene keys for each `captureId` and only flips `ready_state_all` high when all expected scene keys are present.
+This is intentionally not tied to a specific scene key. The app saves all requested images in parallel, so there is no guaranteed rule like "when sceneC arrives, the batch is complete". Instead, `td_capture_listener.py` counts the received scene keys for each `captureId` and only flips `ready_state_all` high when all expected scene keys are present.
 
 ### Manual Display Buttons
 
 To decide the reveal timing in TouchDesigner, add a small control panel:
 
-1. Create a `Keyboard In CHOP` named `keyboardin1`
-2. Turn on the CHOP so it outputs a `1` channel when you press the `1` key
-3. Create a `CHOP Execute DAT`
-4. Paste in `td_capture_panel_controls.py` or `td_capture_listener.py`
-5. In the `CHOP Execute DAT` parameters:
+1. Create a `Constant CHOP` named `generation_count`
+2. Set `value0` to a number from `1` to `10`
+3. Create a `Keyboard In CHOP` named `keyboardin1`
+4. Turn on the CHOP so it outputs a `1` channel when you press the `1` key
+5. Create a `CHOP Execute DAT`
+6. Paste in `td_capture_panel_controls.py` or `td_capture_listener.py`
+7. In the `CHOP Execute DAT` parameters:
    - `CHOP`: `/project1/keyboardin1`
    - `Off to On`: `On`
    - `While On`: `Off`
    - `On to Off`: `Off`
    - `Value Change`: `Off`
-6. If your operator path differs, edit `START_GENERATION_KEYBOARD_OP_PATHS`
-7. If you want a different key, edit `START_GENERATION_KEY_CHANNELS`
+8. If your operator path differs, edit `START_GENERATION_KEYBOARD_OP_PATHS`
+9. If you want a different key, edit `START_GENERATION_KEY_CHANNELS`
+
+When you press the button or key, the script reads `/project1/generation_count` `value0`, clamps it to `1` through `10`, and sends that number to the browser app.
 
 With the defaults in this repository, both the button and the `1` key send this UDP JSON packet to the local Node server. The script accepts channel names like `1`, `k1`, `num1`, and `numpad1`.
 
 ```json
 {
   "type": "capture",
-  "sessionId": "timewarp-local"
+  "sessionId": "timewarp-local",
+  "imageCount": 5
 }
 ```
 
@@ -169,8 +177,8 @@ If you prefer the previous HTTP method, set `CONTROL_TRANSPORT = 'http'` in `td_
 
 ## Notes
 
-- The app currently saves three timeline images per capture, so TouchDesigner will receive three messages in sequence.
-- The same source image is shared by those three timeline messages, so `moviefilein_original` will keep showing the single captured frame for that prediction batch.
+- The app now supports `1` to `10` timeline images per capture.
+- The same source image is shared by all timeline messages in one capture batch, so `moviefilein_original` will keep showing the single captured frame for that prediction batch.
 - Images are stored with timestamped names such as `timewarp_Timeline_A_1776160553565.png`.
 - `captures/latest_scenes.json` keeps track of which timestamped file is currently newest for each scene.
 - If a UDP packet is missed, you can recover the newest state from `captures/latest_scenes.json` or `http://localhost:3000/api/latest-captures`.

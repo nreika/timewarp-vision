@@ -36,6 +36,9 @@ interface GeminiPromptConfig {
 
 const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 const prompts = promptConfig as GeminiPromptConfig;
+const MIN_SCENARIO_COUNT = 1;
+const MAX_SCENARIO_COUNT = 10;
+const DEFAULT_SCENARIO_COUNT = 3;
 
 const joinLines = (lines: string[]): string => lines.join("\n").trim();
 const joinPromptSections = (...sections: Array<string | string[]>): string =>
@@ -69,19 +72,33 @@ const buildTargetedScenarioContext = (target: Target): string =>
     prompts.userEditable.scenarioPrediction.targetedTargetFocus
   );
 
-const buildScenarioPredictionPrompt = (target: Target | null): string => {
+const clampScenarioCount = (value: number): number => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_SCENARIO_COUNT;
+  }
+
+  return Math.min(MAX_SCENARIO_COUNT, Math.max(MIN_SCENARIO_COUNT, Math.round(value)));
+};
+
+const buildScenarioPredictionPrompt = (target: Target | null, scenarioCount: number): string => {
   const targetContext = target
     ? buildTargetedScenarioContext(target)
     : buildDefaultScenarioContext();
+  const countPlaceholders = { SCENARIO_COUNT: String(scenarioCount) };
 
   return joinPromptSections(
     prompts.userEditable.scenarioPrediction.sceneAnalysisIntro,
     targetContext,
-    prompts.userEditable.scenarioPrediction.predictionRequest,
+    replacePlaceholders(
+      prompts.userEditable.scenarioPrediction.predictionRequest,
+      countPlaceholders
+    ),
     prompts.systemFixed.scenarioPrediction.hardRules,
     prompts.userEditable.scenarioPrediction.variationGuidance,
     prompts.userEditable.scenarioPrediction.descriptionLanguageRule,
-    prompts.systemFixed.scenarioPrediction.outputFormatRules
+    prompts.systemFixed.scenarioPrediction.outputFormatRules.map((rule) =>
+      replacePlaceholders(rule, countPlaceholders)
+    )
   );
 };
 
@@ -101,45 +118,68 @@ export interface ScenarioResult {
 }
 
 /**
- * Step 1: Analyze frame and predict 3 distinct realistic 5-minute outcomes.
+ * Step 1: Analyze frame and predict the requested number of realistic 5-minute outcomes.
  */
-export const predictFutureScenarios = async (base64Image: string, target: Target | null): Promise<ScenarioResult[]> => {
+export const predictFutureScenarios = async (
+  base64Image: string,
+  target: Target | null,
+  requestedScenarioCount = DEFAULT_SCENARIO_COUNT
+): Promise<ScenarioResult[]> => {
   const ai = getAI();
-  const prompt = buildScenarioPredictionPrompt(target);
+  const scenarioCount = clampScenarioCount(requestedScenarioCount);
+  const prompt = buildScenarioPredictionPrompt(target, scenarioCount);
+  let latestScenarioCount = 0;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: {
-      parts: [
-        { inlineData: { data: base64Image.split(',')[1], mimeType: 'image/jpeg' } },
-        { text: prompt }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          scenarios: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                prediction_prompt: { type: Type.STRING },
-                scenario_description: { type: Type.STRING },
-                label: { type: Type.STRING }
-              },
-              required: ["prediction_prompt", "scenario_description", "label"]
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: {
+        parts: [
+          { inlineData: { data: base64Image.split(',')[1], mimeType: 'image/jpeg' } },
+          { text: prompt }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            scenarios: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  prediction_prompt: { type: Type.STRING },
+                  scenario_description: { type: Type.STRING },
+                  label: { type: Type.STRING }
+                },
+                required: ["prediction_prompt", "scenario_description", "label"]
+              }
             }
-          }
-        },
-        required: ["scenarios"]
+          },
+          required: ["scenarios"]
+        }
       }
-    }
-  });
+    });
 
-  const parsed = JSON.parse(response.text || "{}");
-  return parsed.scenarios || [];
+    const parsed = JSON.parse(response.text || "{}");
+    const scenarios = Array.isArray(parsed.scenarios)
+      ? parsed.scenarios.filter((item): item is ScenarioResult =>
+          typeof item?.prediction_prompt === 'string' &&
+          typeof item?.scenario_description === 'string' &&
+          typeof item?.label === 'string'
+        )
+      : [];
+
+    latestScenarioCount = scenarios.length;
+    if (scenarios.length >= scenarioCount) {
+      return scenarios.slice(0, scenarioCount);
+    }
+  }
+
+  throw new Error(
+    `Expected ${scenarioCount} scenarios, but the model returned ${latestScenarioCount}. Please try again.`
+  );
 };
 
 /**

@@ -11,6 +11,13 @@ MOVIE_FILE_IN_OPS = {
     'sceneA': 'moviefilein_scene_a',
     'sceneB': 'moviefilein_scene_b',
     'sceneC': 'moviefilein_scene_c',
+    'sceneD': 'moviefilein_scene_d',
+    'sceneE': 'moviefilein_scene_e',
+    'sceneF': 'moviefilein_scene_f',
+    'sceneG': 'moviefilein_scene_g',
+    'sceneH': 'moviefilein_scene_h',
+    'sceneI': 'moviefilein_scene_i',
+    'sceneJ': 'moviefilein_scene_j',
 }
 ORIGINAL_MOVIE_FILE_IN_OP = 'moviefilein_original'
 INFO_TABLE_OP = 'capture_info'
@@ -21,6 +28,10 @@ RELOAD_RETRY_FRAMES = (1, 6)
 START_GENERATION_BUTTON_PATH = '/project1/start_generation_btn'
 START_GENERATION_KEYBOARD_OP_PATHS = ('/project1/keyboardin1',)
 START_GENERATION_KEY_CHANNELS = ('1', 'k1', 'num1', 'numpad1')
+GENERATION_COUNT_OP_PATH = '/project1/generation_count'
+DEFAULT_IMAGE_COUNT = 3
+MIN_IMAGE_COUNT = 1
+MAX_IMAGE_COUNT = 10
 
 CONTROL_TRANSPORT = 'udp'
 CONTROL_UDP_HOST = '127.0.0.1'
@@ -37,7 +48,7 @@ STREAM_KEYBOARD_OP_PATHS = ('/project1/keyboardin1',)
 START_STREAM_KEY_CHANNELS = ('0', 'k0', 'num0', 'numpad0')
 STOP_STREAM_KEY_CHANNELS = ('9', 'k9', 'num9', 'numpad9')
 
-EXPECTED_SCENE_KEYS = tuple(sorted(MOVIE_FILE_IN_OPS))
+KNOWN_SCENE_KEYS = tuple(sorted(MOVIE_FILE_IN_OPS))
 
 
 def _debug(message):
@@ -59,10 +70,11 @@ def _new_scene_state(capture_id=''):
     }
 
 
-SCENE_STATES = {scene_key: _new_scene_state() for scene_key in EXPECTED_SCENE_KEYS}
+SCENE_STATES = {scene_key: _new_scene_state() for scene_key in KNOWN_SCENE_KEYS}
 BATCH_STATE = {
     'captureId': '',
     'receivedSceneKeys': set(),
+    'expectedImageCount': DEFAULT_IMAGE_COUNT,
     'isReady': False,
     'completedAt': '',
 }
@@ -74,6 +86,57 @@ def _utc_timestamp():
 
 def _td_op(name):
     return op(name) if name else None
+
+
+def _clamp_image_count(value):
+    try:
+        numeric_value = int(round(float(value)))
+    except Exception:
+        return DEFAULT_IMAGE_COUNT
+
+    return max(MIN_IMAGE_COUNT, min(MAX_IMAGE_COUNT, numeric_value))
+
+
+def _read_generation_count():
+    count_op = _td_op(GENERATION_COUNT_OP_PATH)
+    if count_op is None:
+        return DEFAULT_IMAGE_COUNT
+
+    try:
+        if hasattr(count_op, 'numChans') and count_op.numChans > 0:
+            channels = count_op.chans()
+            if channels:
+                return _clamp_image_count(channels[0].eval())
+    except Exception:
+        pass
+
+    par = getattr(getattr(count_op, 'par', None), 'value0', None)
+    if par is None:
+        panel = getattr(count_op, 'panel', None)
+        if panel is None:
+            return DEFAULT_IMAGE_COUNT
+
+        for attr_name in ('value', 'state', 'select'):
+            panel_value = getattr(panel, attr_name, None)
+            if panel_value is None:
+                continue
+
+            try:
+                raw_value = panel_value.eval() if hasattr(panel_value, 'eval') else panel_value
+                return _clamp_image_count(raw_value)
+            except Exception:
+                continue
+
+        return DEFAULT_IMAGE_COUNT
+
+    try:
+        return _clamp_image_count(par.eval())
+    except Exception:
+        return DEFAULT_IMAGE_COUNT
+
+
+def _expected_scene_count():
+    return min(len(KNOWN_SCENE_KEYS), _clamp_image_count(BATCH_STATE.get('expectedImageCount', DEFAULT_IMAGE_COUNT)))
 
 
 def _pulse_reload(target_op_path):
@@ -159,27 +222,30 @@ def _receiver_module():
     return _receiver_dat().module
 
 
-def _reset_batch(capture_id=''):
+def _reset_batch(capture_id='', expected_image_count=DEFAULT_IMAGE_COUNT):
     BATCH_STATE.update({
         'captureId': capture_id or '',
         'receivedSceneKeys': set(),
+        'expectedImageCount': _clamp_image_count(expected_image_count),
         'isReady': False,
         'completedAt': '',
     })
 
-    for scene_key in EXPECTED_SCENE_KEYS:
+    for scene_key in KNOWN_SCENE_KEYS:
         SCENE_STATES[scene_key] = _new_scene_state(capture_id or '')
 
 
-def _register_scene(capture_id, scene_key, saved_at):
+def _register_scene(capture_id, scene_key, saved_at, expected_image_count):
     capture_id = capture_id or ''
     if capture_id != BATCH_STATE['captureId']:
-        _reset_batch(capture_id)
+        _reset_batch(capture_id, expected_image_count)
+    else:
+        BATCH_STATE['expectedImageCount'] = _clamp_image_count(expected_image_count)
 
     if scene_key in SCENE_STATES:
         BATCH_STATE['receivedSceneKeys'].add(scene_key)
 
-    BATCH_STATE['isReady'] = len(BATCH_STATE['receivedSceneKeys']) == len(EXPECTED_SCENE_KEYS)
+    BATCH_STATE['isReady'] = len(BATCH_STATE['receivedSceneKeys']) >= _expected_scene_count()
     if BATCH_STATE['isReady']:
         BATCH_STATE['completedAt'] = saved_at or _utc_timestamp()
 
@@ -202,12 +268,12 @@ def _sync_info_table(payload, target_path):
         ['batch.captureId', BATCH_STATE['captureId']],
         ['batch.receivedSceneKeys', ','.join(sorted(BATCH_STATE['receivedSceneKeys']))],
         ['batch.receivedSceneCount', len(BATCH_STATE['receivedSceneKeys'])],
-        ['batch.expectedSceneCount', len(EXPECTED_SCENE_KEYS)],
+        ['batch.expectedSceneCount', _expected_scene_count()],
         ['batch.isReady', int(BATCH_STATE['isReady'])],
         ['batch.completedAt', BATCH_STATE['completedAt']],
     ]
 
-    for scene_key in EXPECTED_SCENE_KEYS:
+    for scene_key in KNOWN_SCENE_KEYS:
         state = SCENE_STATES[scene_key]
         rows.extend([
             ['{}.ready'.format(scene_key), int(bool(state['ready']))],
@@ -244,7 +310,12 @@ def _apply_capture_payload(payload):
     if source_path and not _reload_movie(ORIGINAL_MOVIE_FILE_IN_OP, source_path):
         debug('TimeWarp bridge: missing operator for original image')
 
-    _register_scene(payload.get('captureId', ''), scene_key, payload.get('savedAt', ''))
+    _register_scene(
+        payload.get('captureId', ''),
+        scene_key,
+        payload.get('savedAt', ''),
+        payload.get('expectedImageCount', DEFAULT_IMAGE_COUNT)
+    )
     state = SCENE_STATES[scene_key]
     state.update({
         'ready': True,
@@ -263,30 +334,37 @@ def resync_latest_scenes(expected_capture_id=''):
     manifest = _fetch_latest_manifest()
     scenes = manifest.get('scenes', {}) if isinstance(manifest, dict) else {}
     payloads = []
-    for scene_key in EXPECTED_SCENE_KEYS:
-        payload = scenes.get(scene_key)
+    for payload in scenes.values():
         if not isinstance(payload, dict):
             continue
         if expected_capture_id and payload.get('captureId', '') != expected_capture_id:
             continue
         payloads.append(payload)
 
+    payloads.sort(
+        key=lambda item: item.get('sceneIndex', 0)
+        if isinstance(item.get('sceneIndex', 0), int)
+        else 0
+    )
     for payload in payloads:
         _apply_capture_payload(payload)
     return bool(payloads)
 
 
 def request_capture():
+    image_count = _read_generation_count()
     if CONTROL_TRANSPORT.lower() == 'udp':
         payload = {
             'type': 'capture',
             'sessionId': SESSION_ID,
+            'imageCount': image_count,
         }
         _send_udp_json(CONTROL_UDP_HOST, CONTROL_UDP_PORT, payload)
         _debug(
-            'Queued remote capture command via udp://{}:{}.'.format(
+            'Queued remote capture command via udp://{}:{} (imageCount={}).'.format(
                 CONTROL_UDP_HOST,
-                CONTROL_UDP_PORT
+                CONTROL_UDP_PORT,
+                image_count
             )
         )
         return payload
@@ -295,9 +373,9 @@ def request_capture():
         SERVER_BASE_URL.rstrip('/'),
         SESSION_ID
     )
-    response = _post_json(url, {})
+    response = _post_json(url, {'imageCount': image_count})
     command_id = response.get('command', {}).get('id', '?')
-    _debug('Queued remote capture command via HTTP #{}.'.format(command_id))
+    _debug('Queued remote capture command via HTTP #{} (imageCount={}).'.format(command_id, image_count))
     return response
 
 

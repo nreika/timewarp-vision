@@ -14,6 +14,7 @@ export interface PredictionData {
   originalImage: string;
   items: PredictionItem[];
   timestamp: number;
+  requestedImageCount: number;
 }
 
 export type TouchDesignerBridgeStatus =
